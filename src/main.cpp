@@ -1,11 +1,148 @@
+// =============================================================================
+// Board-level hardware abstraction
+// =============================================================================
+#ifdef BOARD_IDEASPARK
+// ── Ideaspark 1.14" ESP32 + MPU6050 ─────────────────────────────────────────
+// TFT_eSPI is configured via -DTFT_* build flags in platformio.ini.
+// Pin defaults (override with -DBTN_A_PIN etc. in platformio.ini):
+#ifndef BTN_A_PIN
+  #define BTN_A_PIN  0    // BOOT button — active-LOW, internal pull-up
+#endif
+#ifndef BTN_B_PIN
+  #define BTN_B_PIN  35   // side button — input-only, add 10kΩ to 3V3
+#endif
+#ifndef BUZZER_PIN
+  #define BUZZER_PIN -1   // passive buzzer GPIO; -1 = silence
+#endif
+#ifndef HW_LED_PIN
+  #define HW_LED_PIN -1   // GPIO 2 is TFT DC on Ideaspark — leave disabled
+#endif
+
+#include <TFT_eSPI.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <Wire.h>
+#include <esp_sleep.h>
+
+// Minimal button class that mirrors M5's button API surface
+class IdeaButton {
+  uint8_t  _pin;
+  bool     _last = false, _cur = false, _wasP = false, _wasR = false;
+  uint32_t _pressedAt = 0;
+public:
+  IdeaButton() : _pin(0) {}
+  explicit IdeaButton(uint8_t pin) : _pin(pin) {}
+  void begin(bool pullup = true) { pinMode(_pin, pullup ? INPUT_PULLUP : INPUT); }
+  void update() {
+    bool raw = (digitalRead(_pin) == LOW);
+    _wasP = raw && !_last;
+    _wasR = !raw && _last;
+    if (_wasP) _pressedAt = millis();
+    _last = _cur = raw;
+  }
+  bool isPressed()           const { return _cur; }
+  bool wasPressed()          const { return _wasP; }
+  bool wasReleased()         const { return _wasR; }
+  bool pressedFor(uint32_t ms)     { return _cur && (millis() - _pressedAt >= ms); }
+};
+
+static TFT_eSPI         _hwTft;
+static Adafruit_MPU6050 _hwMpu;
+static bool             _mpuOk  = false;
+static IdeaButton       _hwBtnA(BTN_A_PIN);
+static IdeaButton       _hwBtnB(BTN_B_PIN);
+
+// Unified references used throughout main.cpp
+#define M5_LCD  _hwTft
+#define M5_BTNA _hwBtnA
+#define M5_BTNB _hwBtnB
+
+static uint8_t _hwBrightLevel = 4;  // mirrors brightLevel; needed by displayOn()
+
+static bool _hwGetAccel(float& ax, float& ay, float& az) {
+  if (!_mpuOk) { ax = 0; ay = 0; az = -1.0f; return false; }
+  sensors_event_t a, g, t;
+  _hwMpu.getEvent(&a, &g, &t);
+  ax = a.acceleration.x / 9.81f;
+  ay = a.acceleration.y / 9.81f;
+  az = a.acceleration.z / 9.81f;
+  return true;
+}
+static void _hwDisplayBright(uint8_t lev4) {
+  _hwBrightLevel = lev4;
+  analogWrite(TFT_BL, 51 + lev4 * 51);   // 51–255 ≈ 20–100%
+}
+static void _hwDisplayOn(bool on) {
+  analogWrite(TFT_BL, on ? (51 + _hwBrightLevel * 51) : 0);
+}
+static void _hwBeep(uint16_t freq, uint16_t dur) {
+  if (BUZZER_PIN < 0) return;
+  tone(BUZZER_PIN, freq, dur);
+}
+static void _hwLedSet(bool on) {
+  if (HW_LED_PIN < 0) return;
+  digitalWrite(HW_LED_PIN, on ? HIGH : LOW);   // active-HIGH
+}
+static void _hwUpdate() { _hwBtnA.update(); _hwBtnB.update(); }
+static void _hwBeepUpdate() {}   // tone() manages its own duration
+
+static void _hwSetup() {
+  _hwTft.init();
+  _hwTft.setRotation(0);
+  _hwTft.fillScreen(TFT_BLACK);
+  pinMode(TFT_BL, OUTPUT);
+  _hwDisplayOn(false);                          // off until applyBrightness()
+
+  Wire.begin(21, 22);                           // SDA=21 SCL=22 for MPU6050
+  _mpuOk = _hwMpu.begin();
+  if (!_mpuOk) Serial.println("[hw] MPU6050 not found — IMU disabled");
+
+  _hwBtnA.begin(true);    // INPUT_PULLUP (BOOT button)
+  _hwBtnB.begin(false);   // INPUT only  (GPIO 35, input-only pin)
+
+  if (HW_LED_PIN >= 0) { pinMode(HW_LED_PIN, OUTPUT); _hwLedSet(false); }
+  if (BUZZER_PIN >= 0)   pinMode(BUZZER_PIN, OUTPUT);
+}
+
+#else  // ── M5StickC Plus ────────────────────────────────────────────────────
 #include <M5StickCPlus.h>
+
+#define M5_LCD  M5.Lcd
+#define M5_BTNA M5.BtnA
+#define M5_BTNB M5.BtnB
+
+static bool _hwGetAccel(float& ax, float& ay, float& az) {
+  M5.Imu.getAccelData(&ax, &ay, &az);
+  return true;
+}
+static void _hwDisplayBright(uint8_t lev4) { M5.Axp.ScreenBreath(20 + lev4 * 20); }
+static void _hwDisplayOn(bool on)          { M5.Axp.SetLDO2(on); }
+static void _hwBeep(uint16_t freq, uint16_t dur) { M5.Beep.tone(freq, dur); }
+static void _hwLedSet(bool on) { digitalWrite(10, on ? LOW : HIGH); }  // active-LOW
+static void _hwUpdate()      { M5.update(); }
+static void _hwBeepUpdate()  { M5.Beep.update(); }
+static void _hwSetup() {
+  M5.begin();
+  M5_LCD.setRotation(0);
+  M5.Imu.Init();
+  M5.Beep.begin();
+  pinMode(10, OUTPUT);
+  digitalWrite(10, HIGH);   // LED off
+}
+
+#endif  // ────────────────────────────────────────────────────────────────────
+
 #include <LittleFS.h>
 #include <stdarg.h>
 #include "ble_bridge.h"
 #include "data.h"
 #include "buddy.h"
 
+#ifdef BOARD_IDEASPARK
+TFT_eSprite spr = TFT_eSprite(&_hwTft);
+#else
 TFT_eSprite spr = TFT_eSprite(&M5.Lcd);
+#endif
 
 // Advertise as "Claude-XXXX" (last two BT MAC bytes) so multiple sticks
 // in one room are distinguishable in the desktop picker. Name persists in
@@ -23,7 +160,6 @@ static void startBt() {
 const int W = 135, H = 240;
 const int CX = W / 2;
 const int CY_BASE = 120;
-const int LED_PIN = 10;          // red LED, active-low
 
 // Colors used across multiple UI surfaces
 const uint16_t HOT   = 0xFA20;   // red-orange: warnings, impatience, deny
@@ -90,16 +226,16 @@ uint32_t promptArrivedMs = 0;
 // Face-down = Z-axis dominant and negative. Debounced so a toss doesn't count.
 static bool isFaceDown() {
   float ax, ay, az;
-  M5.Imu.getAccelData(&ax, &ay, &az);
+  _hwGetAccel(ax, ay, az);
   return az < -0.7f && fabsf(ax) < 0.4f && fabsf(ay) < 0.4f;
 }
 
-static void applyBrightness() { M5.Axp.ScreenBreath(20 + brightLevel * 20); }
+static void applyBrightness() { _hwDisplayBright(brightLevel); }
 
 static void wake() {
   lastInteractMs = millis();
   if (screenOff) {
-    M5.Axp.SetLDO2(true);
+    _hwDisplayOn(true);
     applyBrightness();
     screenOff = false;
     wakeTransitionUntil = millis() + 12000;
@@ -109,7 +245,7 @@ static void wake() {
 bool     responseSent = false;
 
 static void beep(uint16_t freq, uint16_t dur) {
-  if (settings().sound) M5.Beep.tone(freq, dur);
+  if (settings().sound) _hwBeep(freq, dur);
 }
 
 static void sendCmd(const char* json) {
@@ -305,7 +441,13 @@ static void drawReset() {
 void menuConfirm() {
   switch (menuSel) {
     case 0: settingsOpen = true; menuOpen = false; settingsSel = 0; break;
-    case 1: M5.Axp.PowerOff(); break;
+    case 1:
+#ifdef BOARD_IDEASPARK
+      esp_deep_sleep_start();
+#else
+      M5.Axp.PowerOff();
+#endif
+      break;
     case 2:
     case 3:
       menuOpen = false;
@@ -356,14 +498,19 @@ static bool            _onUsb       = false;
 static void clockRefreshRtc() {
   if (millis() - _clkLastRead < 1000) return;
   _clkLastRead = millis();
+#ifdef BOARD_IDEASPARK
+  _onUsb = true;   // Ideaspark is always USB-powered
+  if (_rtcValid) { _swRtcGetTime(&_clkTm); _swRtcGetDate(&_clkDt); }
+#else
   _onUsb = M5.Axp.GetVBusVoltage() > 4.0f;
   M5.Rtc.GetTime(&_clkTm);
   M5.Rtc.GetDate(&_clkDt);
+#endif
 }
 
 static void clockUpdateOrient() {
   float ax, ay, az;
-  M5.Imu.getAccelData(&ax, &ay, &az);
+  _hwGetAccel(ax, ay, az);
   uint8_t lock = settings().clockRot;
   if (lock == 1) { clockOrient = 0; return; }
   if (lock == 2) {
@@ -432,10 +579,10 @@ static void drawClock() {
   // Landscape: 240×135 direct-to-LCD. Full fill only on entry; after that
   // text glyph bg cells repaint themselves and the pet box (small, ~90×50)
   // gets a fillRect each pet tick — small enough not to tear.
-  M5.Lcd.setRotation(clockOrient);
+  M5_LCD.setRotation(clockOrient);
   static uint8_t lastSec = 0xFF;
   bool repaint = paintedOrient != clockOrient;
-  if (repaint) { M5.Lcd.fillScreen(p.bg); paintedOrient = clockOrient; lastSec = 0xFF; }
+  if (repaint) { M5_LCD.fillScreen(p.bg); paintedOrient = clockOrient; lastSec = 0xFF; }
 
   // Seconds tick at 1Hz; redrawing 3 strings at 60fps is 180 SPI ops/sec
   // for nothing. Gate on the second changing (or full repaint).
@@ -443,12 +590,12 @@ static void drawClock() {
     lastSec = _clkTm.Seconds;
     char wdl[12]; snprintf(wdl, sizeof(wdl), "%s %s %02u", DOW[clockDow()], MON[mi], _clkDt.Date);
     char ssl[3]; snprintf(ssl, sizeof(ssl), "%02u", _clkTm.Seconds);
-    M5.Lcd.setTextDatum(MC_DATUM);
-    M5.Lcd.setTextSize(3); M5.Lcd.setTextColor(p.text, p.bg);    M5.Lcd.drawString(hm, 170, 42);
-    M5.Lcd.setTextSize(2); M5.Lcd.setTextColor(p.textDim, p.bg); M5.Lcd.drawString(ssl, 170, 72);
-                                                                  M5.Lcd.drawString(wdl, 170, 102);
-    M5.Lcd.setTextDatum(TL_DATUM);
-    M5.Lcd.setTextSize(1);
+    M5_LCD.setTextDatum(MC_DATUM);
+    M5_LCD.setTextSize(3); M5_LCD.setTextColor(p.text, p.bg);    M5_LCD.drawString(hm, 170, 42);
+    M5_LCD.setTextSize(2); M5_LCD.setTextColor(p.textDim, p.bg); M5_LCD.drawString(ssl, 170, 72);
+                                                                  M5_LCD.drawString(wdl, 170, 102);
+    M5_LCD.setTextDatum(TL_DATUM);
+    M5_LCD.setTextSize(1);
   }
 
   // Pet on left at 5 fps. Clear includes the overlay-particle zone above
@@ -462,18 +609,18 @@ static void drawClock() {
       // hardcode BUDDY_X_CENTER=67 / BUDDY_Y_OVERLAY=6 for particles so
       // keep portrait coords and just swap the surface — pet lands
       // upper-left of landscape, which is where we want it anyway.
-      M5.Lcd.fillRect(0, 0, 115, 90, p.bg);
-      buddyRenderTo(&M5.Lcd, activeState);
+      M5_LCD.fillRect(0, 0, 115, 90, p.bg);
+      buddyRenderTo(&M5_LCD, activeState);
     } else {
       // Full-frame GIFs paint every pixel (transparent → pal.bg), so a
       // per-tick clear just adds a visible black flash between wipe and
       // last scanline. The entry fillScreen on paintedOrient change
       // already covers the surround.
       characterSetState(activeState);
-      characterRenderTo(&M5.Lcd, 57, 45);
+      characterRenderTo(&M5_LCD, 57, 45);
     }
   }
-  M5.Lcd.setRotation(0);
+  M5_LCD.setRotation(0);
 }
 
 PersonaState derive(const TamaState& s) {
@@ -491,7 +638,7 @@ void triggerOneShot(PersonaState s, uint32_t durMs) {
 
 bool checkShake() {
   float ax, ay, az;
-  M5.Imu.getAccelData(&ax, &ay, &az);
+  _hwGetAccel(ax, ay, az);
   float mag = sqrtf(ax*ax + ay*ay + az*az);
   float delta = fabsf(mag - accelBaseline);
   accelBaseline = accelBaseline * 0.95f + mag * 0.05f;
@@ -592,11 +739,26 @@ void drawInfo() {
 
   } else if (infoPage == 3) {
     _infoHeader(p, y, "DEVICE", infoPage);
-
+#ifdef BOARD_IDEASPARK
+    spr.setTextColor(p.text, p.bg);
+    ln("SYSTEM");
+    spr.setTextColor(p.textDim, p.bg);
+    if (ownerName()[0]) ln("  owner    %s", ownerName());
+    uint32_t up = millis() / 1000;
+    ln("  uptime   %luh %02lum", up / 3600, (up / 60) % 60);
+    ln("  heap     %uKB", ESP.getFreeHeap() / 1024);
+    y += 8;
+    spr.setTextColor(p.text, p.bg);
+    ln("BT / DISPLAY");
+    spr.setTextColor(p.textDim, p.bg);
+    ln("  bright   %u/4", brightLevel);
+    ln("  bt       %s", settings().bt ? (dataBtActive() ? "linked" : "on") : "off");
+    ln("  imu      %s", _mpuOk ? "MPU6050 ok" : "not found");
+#else
     int vBat_mV = (int)(M5.Axp.GetBatVoltage() * 1000);
     int iBat_mA = (int)M5.Axp.GetBatCurrent();
     int vBus_mV = (int)(M5.Axp.GetVBusVoltage() * 1000);
-    int pct = (vBat_mV - 3200) / 10;   // (v-3.2)/(4.2-3.2)*100 = (v-3.2)*100 = (mv-3200)/10
+    int pct = (vBat_mV - 3200) / 10;
     if (pct < 0) pct = 0; if (pct > 100) pct = 100;
     bool usb = vBus_mV > 4000;
     bool charging = usb && iBat_mA > 1;
@@ -628,6 +790,7 @@ void drawInfo() {
     ln("  bright   %u/4", brightLevel);
     ln("  bt       %s", settings().bt ? (dataBtActive() ? "linked" : "on") : "off");
     ln("  temp     %dC", (int)M5.Axp.GetTempInAXP192());
+#endif
 
   } else if (infoPage == 4) {
     _infoHeader(p, y, "BLUETOOTH", infoPage);
@@ -682,8 +845,13 @@ void drawInfo() {
     spr.setTextColor(p.textDim, p.bg);
     ln("hardware");
     y += 4;
+#ifdef BOARD_IDEASPARK
+    ln("Ideaspark ESP32");
+    ln("1.14\" + MPU6050");
+#else
     ln("M5StickC Plus");
     ln("ESP32 + AXP192");
+#endif
   }
 }
 
@@ -936,13 +1104,8 @@ void drawHUD() {
 }
 
 void setup() {
-  M5.begin();
-  M5.Lcd.setRotation(0);
-  M5.Imu.Init();
-  M5.Beep.begin();
+  _hwSetup();
   startBt();
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);   // off
   applyBrightness();
   lastInteractMs = millis();
   statsLoad();
@@ -986,8 +1149,8 @@ void setup() {
 }
 
 void loop() {
-  M5.update();
-  M5.Beep.update();
+  _hwUpdate();
+  _hwBeepUpdate();
   t++;
   uint32_t now = millis();
 
@@ -1002,11 +1165,7 @@ void loop() {
   if ((int32_t)(now - oneShotUntil) >= 0) activeState = baseState;
 
   // LED: pulse on attention, otherwise off
-  if (activeState == P_ATTENTION && settings().led) {
-    digitalWrite(LED_PIN, (now / 400) % 2 ? LOW : HIGH);
-  } else {
-    digitalWrite(LED_PIN, HIGH);
-  }
+  _hwLedSet(activeState == P_ATTENTION && settings().led && (now / 400) % 2);
 
   // shake → dizzy + force scenario advance
   if (now - lastShakeCheck > 50) {
@@ -1043,26 +1202,28 @@ void loop() {
   // Button-press wake. Track which button woke the screen so its full
   // press cycle (including long-press) is swallowed — you don't want
   // BtnA-to-wake to also cycle displayMode or open the menu.
-  if (M5.BtnA.isPressed() || M5.BtnB.isPressed()) {
+  if (M5_BTNA.isPressed() || M5_BTNB.isPressed()) {
     if (screenOff) {
-      if (M5.BtnA.isPressed()) swallowBtnA = true;
-      if (M5.BtnB.isPressed()) swallowBtnB = true;
+      if (M5_BTNA.isPressed()) swallowBtnA = true;
+      if (M5_BTNB.isPressed()) swallowBtnB = true;
     }
     wake();
   }
 
+#ifndef BOARD_IDEASPARK
   // AXP power button (left side): short-press toggles screen off.
   // Long-press (6s) still powers off the device via AXP hardware.
   if (M5.Axp.GetBtnPress() == 0x02) {
     if (screenOff) {
       wake();
     } else {
-      M5.Axp.SetLDO2(false);
+      _hwDisplayOn(false);
       screenOff = true;
     }
   }
+#endif
 
-  if (M5.BtnA.pressedFor(600) && !btnALong && !swallowBtnA) {
+  if (M5_BTNA.pressedFor(600) && !btnALong && !swallowBtnA) {
     btnALong = true;
     beep(800, 60);
     if (resetOpen) { resetOpen = false; }
@@ -1074,7 +1235,7 @@ void loop() {
     }
     Serial.println(menuOpen ? "menu open" : "menu close");
   }
-  if (M5.BtnA.wasReleased()) {
+  if (M5_BTNA.wasReleased()) {
     if (!btnALong && !swallowBtnA) {
       if (inPrompt) {
         char cmd[96];
@@ -1106,7 +1267,7 @@ void loop() {
   }
 
   // BtnB: pet → heart
-  if (M5.BtnB.wasPressed()) {
+  if (M5_BTNB.wasPressed()) {
     if (swallowBtnB) { swallowBtnB = false; }
     else
     if (inPrompt) {
@@ -1243,7 +1404,11 @@ void loop() {
   if (!napping && faceDownFrames >= 15) {
     napping = true;
     napStartMs = now;
+#ifdef BOARD_IDEASPARK
+    analogWrite(TFT_BL, 8);   // very dim while face-down
+#else
     M5.Axp.ScreenBreath(8);
+#endif
     dimmed = true;
   } else if (napping && faceDownFrames <= -8) {
     napping = false;
@@ -1254,12 +1419,21 @@ void loop() {
 
   // millis() not the cached `now`: wake() runs after `now` is captured,
   // so now - lastInteractMs underflows when a button is held → flicker.
-  // No auto-off on USB power — clock face wants to stay visible while charging.
-  if (!screenOff && !inPrompt && !_onUsb
-      && millis() - lastInteractMs > SCREEN_OFF_MS) {
-    M5.Axp.SetLDO2(false);
+  // On M5StickC Plus: skip auto-off while on USB (clock face stays visible).
+  // On Ideaspark: always allow auto-off — _onUsb is always true so we skip
+  // the USB guard and just use idle-timeout.
+#ifdef BOARD_IDEASPARK
+  if (!screenOff && !inPrompt && millis() - lastInteractMs > SCREEN_OFF_MS) {
+    _hwDisplayOn(false);
     screenOff = true;
   }
+#else
+  if (!screenOff && !inPrompt && !_onUsb
+      && millis() - lastInteractMs > SCREEN_OFF_MS) {
+    _hwDisplayOn(false);
+    screenOff = true;
+  }
+#endif
 
   delay(screenOff ? 100 : 16);
 }

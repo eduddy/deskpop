@@ -4,6 +4,33 @@
 #include "ble_bridge.h"
 #include "xfer.h"
 
+// ── Software RTC for Ideaspark (no AXP192/hardware RTC) ─────────────────────
+// On M5StickC Plus, RTC_TimeTypeDef / RTC_DateTypeDef come from M5StickCPlus.h
+// which is already included before data.h. On Ideaspark we define them here
+// and track time via settimeofday() + the POSIX time() call.
+#ifdef BOARD_IDEASPARK
+#include <sys/time.h>
+struct RTC_TimeTypeDef { uint8_t Hours, Minutes, Seconds; };
+struct RTC_DateTypeDef { uint8_t WeekDay, Month, Date; uint16_t Year; };
+static int32_t _swTzOffset = 0;
+static void _swRtcSet(uint32_t epochSec, int32_t tzOffset) {
+  _swTzOffset = tzOffset;
+  struct timeval tv = { .tv_sec = (time_t)epochSec, .tv_usec = 0 };
+  settimeofday(&tv, nullptr);
+}
+static void _swRtcGetTime(RTC_TimeTypeDef* t) {
+  time_t now = time(nullptr) + _swTzOffset;
+  struct tm lt; gmtime_r(&now, &lt);
+  t->Hours = lt.tm_hour; t->Minutes = lt.tm_min; t->Seconds = lt.tm_sec;
+}
+static void _swRtcGetDate(RTC_DateTypeDef* d) {
+  time_t now = time(nullptr) + _swTzOffset;
+  struct tm lt; gmtime_r(&now, &lt);
+  d->WeekDay = lt.tm_wday; d->Month = lt.tm_mon + 1;
+  d->Date = lt.tm_mday;    d->Year  = lt.tm_year + 1900;
+}
+#endif  // BOARD_IDEASPARK
+
 struct TamaState {
   uint8_t  sessionsTotal;
   uint8_t  sessionsRunning;
@@ -72,10 +99,12 @@ static void _applyJson(const char* line, TamaState* out) {
   if (deserializeJson(doc, line)) return;
   if (xferCommand(doc)) { _lastLiveMs = millis(); return; }
 
-  // Bridge sends {"time":[epoch_sec, tz_offset_sec]}; gmtime_r on the
-  // adjusted epoch yields local components including weekday.
+  // Bridge sends {"time":[epoch_sec, tz_offset_sec]}; set hardware or software RTC.
   JsonArray t = doc["time"];
   if (!t.isNull() && t.size() == 2) {
+#ifdef BOARD_IDEASPARK
+    _swRtcSet(t[0].as<uint32_t>(), (int32_t)t[1]);
+#else
     time_t local = (time_t)t[0].as<uint32_t>() + (int32_t)t[1];
     struct tm lt; gmtime_r(&local, &lt);
     RTC_TimeTypeDef tm = { (uint8_t)lt.tm_hour, (uint8_t)lt.tm_min, (uint8_t)lt.tm_sec };
@@ -83,6 +112,7 @@ static void _applyJson(const char* line, TamaState* out) {
                            (uint8_t)lt.tm_mday, (uint16_t)(lt.tm_year + 1900) };
     M5.Rtc.SetTime(&tm);
     M5.Rtc.SetDate(&dt);
+#endif
     extern uint32_t _clkLastRead;
     _clkLastRead = 0;   // force re-read so _clkDt and _rtcValid agree
     _rtcValid = true;
