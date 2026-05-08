@@ -1,5 +1,9 @@
 #include "character.h"
+#ifdef BOARD_IDEASPARK
+#include <TFT_eSPI.h>
+#else
 #include <M5StickCPlus.h>
+#endif
 #include <LittleFS.h>
 #include <AnimatedGIF.h>
 #include <ArduinoJson.h>
