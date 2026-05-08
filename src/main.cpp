@@ -15,7 +15,7 @@
   #define BUZZER_PIN -1   // passive buzzer GPIO; -1 = silence
 #endif
 #ifndef HW_LED_PIN
-  #define HW_LED_PIN  2   // onboard LED, active-HIGH; -1 = none
+  #define HW_LED_PIN -1   // GPIO 2 is TFT DC on Ideaspark — leave disabled
 #endif
 
 #include <TFT_eSPI.h>
