@@ -1,4 +1,5 @@
 .pio/
+.esphome/
 .vscode/
 .DS_Store
 data/
