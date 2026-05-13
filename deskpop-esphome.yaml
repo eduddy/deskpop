@@ -44,7 +44,7 @@ logger:
 
 # ── BLE pairing (Just Works — no PIN required) ─────────────────────────────────
 esp32_ble:
-  io_capability: no_input_no_output
+  io_capability: none
 
 # ── State (0 sleep · 1 idle · 2 busy · 3 attention) ───────────────────────────
 globals:
@@ -163,8 +163,7 @@ esp32_ble_server:
 
                     // ── Send BLE notification helper ─────────────────────────
                     auto send_ble = [&](const std::string &msg) {
-                      std::vector<uint8_t> data(msg.begin(), msg.end());
-                      id(ble_tx)->set_value(data);
+                      id(ble_tx)->set_value(msg);
                       id(ble_tx)->notify();
                     };
 
@@ -332,18 +331,18 @@ binary_sensor:
             std::string resp =
               "{\"cmd\":\"permission\",\"id\":\"" + id(g_prompt_id) +
               "\",\"decision\":\"once\"}\n";
-            std::vector<uint8_t> data(resp.begin(), resp.end());
-            id(ble_tx)->set_value(data);
+            id(ble_tx)->set_value(resp);
             id(ble_tx)->notify();
             id(g_prompt_id) = id(g_prompt_tool) = id(g_prompt_hint) = "";
             id(g_state) = (id(g_running) > 0) ? 2 : 1;
           }
 
-  # Button B (side) — Deny
+  # Button B (side, GPIO35) — Deny
+  # GPIO35 is input-only: no internal pullup. Add 10kΩ to 3V3 on the board.
   - platform: gpio
     pin:
       number: ${btn_b}
-      mode: { input: true, pullup: true }
+      mode: { input: true }
       inverted: true
     id: btn_b
     name: Button B
@@ -353,8 +352,7 @@ binary_sensor:
             std::string resp =
               "{\"cmd\":\"permission\",\"id\":\"" + id(g_prompt_id) +
               "\",\"decision\":\"deny\"}\n";
-            std::vector<uint8_t> data(resp.begin(), resp.end());
-            id(ble_tx)->set_value(data);
+            id(ble_tx)->set_value(resp);
             id(ble_tx)->notify();
             id(g_prompt_id) = id(g_prompt_tool) = id(g_prompt_hint) = "";
             id(g_state) = 1;  // idle
