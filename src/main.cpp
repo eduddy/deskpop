@@ -104,6 +104,126 @@ static void _hwSetup() {
   if (BUZZER_PIN >= 0)   pinMode(BUZZER_PIN, OUTPUT);
 }
 
+#elif defined(BOARD_PLUS2)  // ── M5StickC Plus2 ───────────────────────────
+// Same ST7789 panel as Plus but routed to different pins.
+// Power via AXP2101 (not AXP192) — use deep sleep for off, analogWrite for BL.
+// IMU: QMI8658 on I2C (SDA=21, SCL=22, addr=0x6B).
+// Buttons: BtnA=GPIO37, BtnB=GPIO39, both active-LOW with internal pull-up.
+// LED: GPIO19, active-LOW.  No hardware buzzer.
+#ifndef BTN_A_PIN
+  #define BTN_A_PIN  37
+#endif
+#ifndef BTN_B_PIN
+  #define BTN_B_PIN  39
+#endif
+#ifndef HW_LED_PIN
+  #define HW_LED_PIN 19
+#endif
+#ifndef BUZZER_PIN
+  #define BUZZER_PIN -1
+#endif
+
+#include <TFT_eSPI.h>
+#include <Wire.h>
+#include <esp_sleep.h>
+
+// Reuse the same button shim as Ideaspark
+class Plus2Button {
+  uint8_t  _pin;
+  bool     _last = false, _cur = false, _wasP = false, _wasR = false;
+  uint32_t _pressedAt = 0;
+public:
+  Plus2Button() : _pin(0) {}
+  explicit Plus2Button(uint8_t pin) : _pin(pin) {}
+  void begin() { pinMode(_pin, INPUT_PULLUP); }
+  void update() {
+    bool raw = (digitalRead(_pin) == LOW);
+    _wasP = raw && !_last;
+    _wasR = !raw && _last;
+    if (_wasP) _pressedAt = millis();
+    _last = _cur = raw;
+  }
+  bool isPressed()       const { return _cur; }
+  bool wasPressed()      const { return _wasP; }
+  bool wasReleased()     const { return _wasR; }
+  bool pressedFor(uint32_t ms) { return _cur && (millis() - _pressedAt >= ms); }
+};
+
+static TFT_eSPI     _hwTft;
+static bool         _imuOk = false;
+static Plus2Button  _hwBtnA(BTN_A_PIN);
+static Plus2Button  _hwBtnB(BTN_B_PIN);
+
+#define M5_LCD  _hwTft
+#define M5_BTNA _hwBtnA
+#define M5_BTNB _hwBtnB
+
+static uint8_t _hwBrightLevel = 4;
+
+// QMI8658 minimal driver (I2C address 0x6B)
+#define _QMI_ADDR 0x6B
+static void _qmiWrite(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(_QMI_ADDR);
+  Wire.write(reg); Wire.write(val);
+  Wire.endTransmission();
+}
+static bool _qmiInit() {
+  Wire.begin(21, 22);
+  Wire.beginTransmission(_QMI_ADDR);
+  Wire.write(0x00);  // WHO_AM_I
+  if (Wire.endTransmission(false) != 0) return false;
+  Wire.requestFrom(_QMI_ADDR, 1);
+  if (!Wire.available()) return false;
+  if (Wire.read() != 0x05) return false;  // not QMI8658A
+  _qmiWrite(0x02, 0x60);  // CTRL1: addr-inc, little-endian
+  _qmiWrite(0x03, 0x63);  // CTRL2: accel 125 Hz, ±16 g
+  _qmiWrite(0x08, 0x01);  // CTRL7: enable accel
+  return true;
+}
+
+static bool _hwGetAccel(float& ax, float& ay, float& az) {
+  if (!_imuOk) { ax = 0; ay = 0; az = -1.0f; return false; }
+  Wire.beginTransmission(_QMI_ADDR);
+  Wire.write(0x35);  // AX_L
+  if (Wire.endTransmission(false) != 0) { ax = 0; ay = 0; az = -1.0f; return false; }
+  Wire.requestFrom(_QMI_ADDR, 6);
+  if (Wire.available() < 6) { ax = 0; ay = 0; az = -1.0f; return false; }
+  int16_t rx = (int16_t)(Wire.read() | (Wire.read() << 8));
+  int16_t ry = (int16_t)(Wire.read() | (Wire.read() << 8));
+  int16_t rz = (int16_t)(Wire.read() | (Wire.read() << 8));
+  const float s = 16.0f / 32768.0f;
+  ax = rx * s; ay = ry * s; az = rz * s;
+  return true;
+}
+static void _hwDisplayBright(uint8_t lev4) {
+  _hwBrightLevel = lev4;
+  analogWrite(TFT_BL, 51 + lev4 * 51);
+}
+static void _hwDisplayOn(bool on) {
+  analogWrite(TFT_BL, on ? (51 + _hwBrightLevel * 51) : 0);
+}
+static void _hwBeep(uint16_t /*freq*/, uint16_t /*dur*/) {}  // no buzzer
+static void _hwLedSet(bool on) {
+  if (HW_LED_PIN < 0) return;
+  digitalWrite(HW_LED_PIN, on ? LOW : HIGH);
+}
+static void _hwUpdate()     { _hwBtnA.update(); _hwBtnB.update(); }
+static void _hwBeepUpdate() {}
+static void _hwSetup() {
+  _hwTft.init();
+  _hwTft.setRotation(0);
+  _hwTft.fillScreen(TFT_BLACK);
+  pinMode(TFT_BL, OUTPUT);
+  _hwDisplayOn(false);
+
+  _imuOk = _qmiInit();
+  if (!_imuOk) Serial.println("[hw] QMI8658 not found — IMU disabled");
+
+  _hwBtnA.begin();
+  _hwBtnB.begin();
+  if (HW_LED_PIN >= 0) { pinMode(HW_LED_PIN, OUTPUT); _hwLedSet(false); }
+}
+
 #else  // ── M5StickC Plus ────────────────────────────────────────────────────
 #include <M5StickCPlus.h>
 
@@ -138,7 +258,7 @@ static void _hwSetup() {
 #include "data.h"
 #include "buddy.h"
 
-#ifdef BOARD_IDEASPARK
+#if defined(BOARD_IDEASPARK) || defined(BOARD_PLUS2)
 TFT_eSprite spr = TFT_eSprite(&_hwTft);
 #else
 TFT_eSprite spr = TFT_eSprite(&M5.Lcd);
@@ -442,7 +562,7 @@ void menuConfirm() {
   switch (menuSel) {
     case 0: settingsOpen = true; menuOpen = false; settingsSel = 0; break;
     case 1:
-#ifdef BOARD_IDEASPARK
+#if defined(BOARD_IDEASPARK) || defined(BOARD_PLUS2)
       esp_deep_sleep_start();
 #else
       M5.Axp.PowerOff();
@@ -498,8 +618,8 @@ static bool            _onUsb       = false;
 static void clockRefreshRtc() {
   if (millis() - _clkLastRead < 1000) return;
   _clkLastRead = millis();
-#ifdef BOARD_IDEASPARK
-  _onUsb = true;   // Ideaspark is always USB-powered
+#if defined(BOARD_IDEASPARK) || defined(BOARD_PLUS2)
+  _onUsb = true;   // no AXP192 VBUS sense; treat as always USB-powered
   if (_rtcValid) { _swRtcGetTime(&_clkTm); _swRtcGetDate(&_clkDt); }
 #else
   _onUsb = M5.Axp.GetVBusVoltage() > 4.0f;
@@ -739,7 +859,7 @@ void drawInfo() {
 
   } else if (infoPage == 3) {
     _infoHeader(p, y, "DEVICE", infoPage);
-#ifdef BOARD_IDEASPARK
+#if defined(BOARD_IDEASPARK) || defined(BOARD_PLUS2)
     spr.setTextColor(p.text, p.bg);
     ln("SYSTEM");
     spr.setTextColor(p.textDim, p.bg);
@@ -753,7 +873,11 @@ void drawInfo() {
     spr.setTextColor(p.textDim, p.bg);
     ln("  bright   %u/4", brightLevel);
     ln("  bt       %s", settings().bt ? (dataBtActive() ? "linked" : "on") : "off");
+#ifdef BOARD_IDEASPARK
     ln("  imu      %s", _mpuOk ? "MPU6050 ok" : "not found");
+#else
+    ln("  imu      %s", _imuOk ? "QMI8658 ok" : "not found");
+#endif
 #else
     int vBat_mV = (int)(M5.Axp.GetBatVoltage() * 1000);
     int iBat_mA = (int)M5.Axp.GetBatCurrent();
@@ -845,7 +969,10 @@ void drawInfo() {
     spr.setTextColor(p.textDim, p.bg);
     ln("hardware");
     y += 4;
-#ifdef BOARD_IDEASPARK
+#if defined(BOARD_PLUS2)
+    ln("M5StickC Plus2");
+    ln("ESP32 + AXP2101");
+#elif defined(BOARD_IDEASPARK)
     ln("Ideaspark ESP32");
     ln("1.14\" + MPU6050");
 #else
@@ -1210,7 +1337,7 @@ void loop() {
     wake();
   }
 
-#ifndef BOARD_IDEASPARK
+#if !defined(BOARD_IDEASPARK) && !defined(BOARD_PLUS2)
   // AXP power button (left side): short-press toggles screen off.
   // Long-press (6s) still powers off the device via AXP hardware.
   if (M5.Axp.GetBtnPress() == 0x02) {
@@ -1404,7 +1531,7 @@ void loop() {
   if (!napping && faceDownFrames >= 15) {
     napping = true;
     napStartMs = now;
-#ifdef BOARD_IDEASPARK
+#if defined(BOARD_IDEASPARK) || defined(BOARD_PLUS2)
     analogWrite(TFT_BL, 8);   // very dim while face-down
 #else
     M5.Axp.ScreenBreath(8);
@@ -1420,9 +1547,9 @@ void loop() {
   // millis() not the cached `now`: wake() runs after `now` is captured,
   // so now - lastInteractMs underflows when a button is held → flicker.
   // On M5StickC Plus: skip auto-off while on USB (clock face stays visible).
-  // On Ideaspark: always allow auto-off — _onUsb is always true so we skip
-  // the USB guard and just use idle-timeout.
-#ifdef BOARD_IDEASPARK
+  // On Ideaspark/Plus2: always allow auto-off — _onUsb is always true so we
+  // skip the USB guard and just use idle-timeout.
+#if defined(BOARD_IDEASPARK) || defined(BOARD_PLUS2)
   if (!screenOff && !inPrompt && millis() - lastInteractMs > SCREEN_OFF_MS) {
     _hwDisplayOn(false);
     screenOff = true;

@@ -4,11 +4,11 @@
 #include "ble_bridge.h"
 #include "xfer.h"
 
-// ── Software RTC for Ideaspark (no AXP192/hardware RTC) ─────────────────────
+// ── Software RTC for Ideaspark and Plus2 (no AXP192/hardware RTC path) ──────
 // On M5StickC Plus, RTC_TimeTypeDef / RTC_DateTypeDef come from M5StickCPlus.h
-// which is already included before data.h. On Ideaspark we define them here
-// and track time via settimeofday() + the POSIX time() call.
-#ifdef BOARD_IDEASPARK
+// which is already included before data.h. On Ideaspark and Plus2 we define
+// them here and track time via settimeofday() + the POSIX time() call.
+#if defined(BOARD_IDEASPARK) || defined(BOARD_PLUS2)
 #include <sys/time.h>
 struct RTC_TimeTypeDef { uint8_t Hours, Minutes, Seconds; };
 struct RTC_DateTypeDef { uint8_t WeekDay, Month, Date; uint16_t Year; };
@@ -29,7 +29,7 @@ static void _swRtcGetDate(RTC_DateTypeDef* d) {
   d->WeekDay = lt.tm_wday; d->Month = lt.tm_mon + 1;
   d->Date = lt.tm_mday;    d->Year  = lt.tm_year + 1900;
 }
-#endif  // BOARD_IDEASPARK
+#endif  // BOARD_IDEASPARK || BOARD_PLUS2
 
 struct TamaState {
   uint8_t  sessionsTotal;
@@ -102,7 +102,7 @@ static void _applyJson(const char* line, TamaState* out) {
   // Bridge sends {"time":[epoch_sec, tz_offset_sec]}; set hardware or software RTC.
   JsonArray t = doc["time"];
   if (!t.isNull() && t.size() == 2) {
-#ifdef BOARD_IDEASPARK
+#if defined(BOARD_IDEASPARK) || defined(BOARD_PLUS2)
     _swRtcSet(t[0].as<uint32_t>(), (int32_t)t[1]);
 #else
     time_t local = (time_t)t[0].as<uint32_t>() + (int32_t)t[1];
@@ -114,7 +114,7 @@ static void _applyJson(const char* line, TamaState* out) {
     M5.Rtc.SetDate(&dt);
 #endif
     extern uint32_t _clkLastRead;
-    _clkLastRead = 0;   // force re-read so _clkDt and _rtcValid agree
+    _clkLastRead = 0;
     _rtcValid = true;
     _lastLiveMs = millis();
     return;
