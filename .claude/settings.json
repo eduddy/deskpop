@@ -1,0 +1,11 @@
+{
+  "extraKnownMarketplaces": {
+    "mickek": {
+      "source": "github",
+      "repo": "mickek/ha-pilot"
+    }
+  },
+  "enabledPlugins": {
+    "ha-pilot@mickek": true
+  }
+}
