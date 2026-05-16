@@ -1,5 +1,5 @@
 #include "character.h"
-#ifdef BOARD_IDEASPARK
+#if defined(BOARD_IDEASPARK) || defined(BOARD_PLUS2)
 #include <TFT_eSPI.h>
 #else
 #include <M5StickCPlus.h>
