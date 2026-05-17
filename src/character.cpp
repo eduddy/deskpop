@@ -7,6 +7,7 @@
 #include <LittleFS.h>
 #include <AnimatedGIF.h>
 #include <ArduinoJson.h>
+using fs::File;
 
 extern TFT_eSprite spr;
 

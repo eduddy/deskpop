@@ -224,6 +224,12 @@ static void _hwSetup() {
   if (HW_LED_PIN >= 0) { pinMode(HW_LED_PIN, OUTPUT); _hwLedSet(false); }
 }
 
+#include <esp_mac.h>
+#ifndef GREEN
+#define GREEN 0x07E0
+#define RED   0xF800
+#endif
+
 #else  // ── M5StickC Plus ────────────────────────────────────────────────────
 #include <M5StickCPlus.h>
 
@@ -253,6 +259,7 @@ static void _hwSetup() {
 #endif  // ────────────────────────────────────────────────────────────────────
 
 #include <LittleFS.h>
+using fs::File;
 #include <stdarg.h>
 #include "ble_bridge.h"
 #include "data.h"
