@@ -3,6 +3,8 @@
 #include <ArduinoJson.h>
 #include "ble_bridge.h"
 #include "xfer.h"
+#include "ir_blaster.h"
+#include "net_buddy.h"
 
 // ── Software RTC for Ideaspark and Plus2 (no AXP192/hardware RTC path) ──────
 // On M5StickC Plus, RTC_TimeTypeDef / RTC_DateTypeDef come from M5StickCPlus.h
@@ -98,6 +100,29 @@ static void _applyJson(const char* line, TamaState* out) {
   JsonDocument doc;
   if (deserializeJson(doc, line)) return;
   if (xferCommand(doc)) { _lastLiveMs = millis(); return; }
+
+  // Device-bound commands (desktop/webapp → stick). Fire-and-forget; they
+  // don't alter TamaState, so handle and return before the state-merge below.
+  const char* cmd = doc["cmd"];
+  if (cmd) {
+    if (!strcmp(cmd, "ir")) {
+      JsonVariant ir = doc["ir"];   // nested form: {"cmd":"ir","ir":{...}}
+      if (ir.isNull()) return;
+      if (ir["carrier"].is<uint32_t>()) irSetCarrier(ir["carrier"].as<uint32_t>());
+      if (ir["data"].is<uint32_t>())        irSendNECRaw(ir["data"].as<uint32_t>(), ir["bits"] | 32);
+      else if (ir["addr"].is<int>() && ir["cmd"].is<int>())
+        irSendNEC((uint8_t)ir["addr"].as<int>(), (uint8_t)ir["cmd"].as<int>());
+      _lastLiveMs = millis();
+      return;
+    }
+    if (!strcmp(cmd, "netcfg")) {
+      char outBuf[400];
+      serializeJson(doc, outBuf, sizeof(outBuf));
+      netBuddyApplyConfig(outBuf);
+      _lastLiveMs = millis();
+      return;
+    }
+  }
 
   // Bridge sends {"time":[epoch_sec, tz_offset_sec]}; set hardware or software RTC.
   JsonArray t = doc["time"];

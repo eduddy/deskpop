@@ -1,10 +1,6 @@
 #include "buddy.h"
 #include "buddy_common.h"
-#if defined(BOARD_IDEASPARK) || defined(BOARD_PLUS2)
-#include <TFT_eSPI.h>
-#else
-#include <M5StickCPlus.h>
-#endif
+#include "hw_platform.h"
 #include <string.h>
 
 extern TFT_eSprite spr;
@@ -91,13 +87,14 @@ extern const Species ROBOT_SPECIES;
 extern const Species RABBIT_SPECIES;
 extern const Species MUSHROOM_SPECIES;
 extern const Species CHONK_SPECIES;
+extern const Species EDYDROID_SPECIES;   // humanoid robotic-AI avatar of the owner
 
 static const Species* SPECIES_TABLE[] = {
   &CAPYBARA_SPECIES, &DUCK_SPECIES, &GOOSE_SPECIES, &BLOB_SPECIES,
   &CAT_SPECIES, &DRAGON_SPECIES, &OCTOPUS_SPECIES, &OWL_SPECIES,
   &PENGUIN_SPECIES, &TURTLE_SPECIES, &SNAIL_SPECIES, &GHOST_SPECIES,
   &AXOLOTL_SPECIES, &CACTUS_SPECIES, &ROBOT_SPECIES, &RABBIT_SPECIES,
-  &MUSHROOM_SPECIES, &CHONK_SPECIES,
+  &MUSHROOM_SPECIES, &CHONK_SPECIES, &EDYDROID_SPECIES,
 };
 static const uint8_t N_SPECIES = sizeof(SPECIES_TABLE) / sizeof(SPECIES_TABLE[0]);
 static uint8_t currentSpeciesIdx = 0;

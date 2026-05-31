@@ -1,12 +1,13 @@
 #include "character.h"
-#if defined(BOARD_IDEASPARK) || defined(BOARD_PLUS2)
-#include <TFT_eSPI.h>
-#else
-#include <M5StickCPlus.h>
-#endif
+#include "hw_platform.h"
 #include <LittleFS.h>
 #include <AnimatedGIF.h>
 #include <ArduinoJson.h>
+
+// On the M5StickC Plus build, M5StickCPlus.h pulls `using namespace fs;` into
+// scope; the Plus2/Ideaspark path goes through TFT_eSPI and doesn't, so name
+// the filesystem File type explicitly here.
+using fs::File;
 
 extern TFT_eSprite spr;
 
