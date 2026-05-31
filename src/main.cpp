@@ -135,7 +135,11 @@ class Plus2Button {
 public:
   Plus2Button() : _pin(0) {}
   explicit Plus2Button(uint8_t pin) : _pin(pin) {}
-  void begin() { pinMode(_pin, INPUT_PULLUP); }
+  void begin() {
+    // GPIO34-39 are input-only with no internal pull-up; the Plus2 fits
+    // external pull-ups on BtnA/BtnB, so use plain INPUT there.
+    pinMode(_pin, (_pin >= 34) ? INPUT : INPUT_PULLUP);
+  }
   void update() {
     bool raw = (digitalRead(_pin) == LOW);
     _wasP = raw && !_last;
@@ -160,39 +164,66 @@ static Plus2Button  _hwBtnB(BTN_B_PIN);
 
 static uint8_t _hwBrightLevel = 4;
 
-// QMI8658 minimal driver (I2C address 0x6B)
-#define _QMI_ADDR 0x6B
-static void _qmiWrite(uint8_t reg, uint8_t val) {
-  Wire.beginTransmission(_QMI_ADDR);
+// IMU driver — M5StickC Plus2 units ship with either a QMI8658 (I2C 0x6B) or
+// an MPU6886 (I2C 0x68). Probe both at boot and read whichever answers.
+enum ImuType { IMU_NONE, IMU_QMI8658, IMU_MPU6886 };
+static ImuType _imuType = IMU_NONE;
+static uint8_t _imuAddr = 0;
+
+static void _imuWrite(uint8_t addr, uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(addr);
   Wire.write(reg); Wire.write(val);
   Wire.endTransmission();
 }
-static bool _qmiInit() {
+static int _imuReadReg(uint8_t addr, uint8_t reg) {
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return -1;
+  Wire.requestFrom((int)addr, 1);
+  if (!Wire.available()) return -1;
+  return Wire.read();
+}
+
+static bool _imuInit() {
   Wire.begin(21, 22);
-  Wire.beginTransmission(_QMI_ADDR);
-  Wire.write(0x00);  // WHO_AM_I
-  if (Wire.endTransmission(false) != 0) return false;
-  Wire.requestFrom(_QMI_ADDR, 1);
-  if (!Wire.available()) return false;
-  if (Wire.read() != 0x05) return false;  // not QMI8658A
-  _qmiWrite(0x02, 0x60);  // CTRL1: addr-inc, little-endian
-  _qmiWrite(0x03, 0x63);  // CTRL2: accel 125 Hz, ±16 g
-  _qmiWrite(0x08, 0x01);  // CTRL7: enable accel
-  return true;
+  Wire.setClock(100000);
+  // QMI8658: WHO_AM_I (reg 0x00) == 0x05 at 0x6B
+  if (_imuReadReg(0x6B, 0x00) == 0x05) {
+    _imuType = IMU_QMI8658; _imuAddr = 0x6B;
+    _imuWrite(0x6B, 0x02, 0x60);  // CTRL1: addr-inc, little-endian
+    _imuWrite(0x6B, 0x03, 0x63);  // CTRL2: accel 125 Hz, ±16 g
+    _imuWrite(0x6B, 0x08, 0x01);  // CTRL7: enable accel
+    return true;
+  }
+  // MPU6886: WHO_AM_I (reg 0x75) == 0x19 at 0x68
+  if (_imuReadReg(0x68, 0x75) == 0x19) {
+    _imuType = IMU_MPU6886; _imuAddr = 0x68;
+    _imuWrite(0x68, 0x6B, 0x80); delay(10);  // PWR_MGMT_1: reset
+    _imuWrite(0x68, 0x6B, 0x01); delay(10);  // wake, clock = PLL
+    _imuWrite(0x68, 0x1C, 0x10);             // ACCEL_CONFIG: ±8 g
+    _imuWrite(0x68, 0x1D, 0x06);             // ACCEL_CONFIG2: ~5 Hz LPF
+    delay(10);
+    return true;
+  }
+  return false;
 }
 
 static bool _hwGetAccel(float& ax, float& ay, float& az) {
-  if (!_imuOk) { ax = 0; ay = 0; az = -1.0f; return false; }
-  Wire.beginTransmission(_QMI_ADDR);
-  Wire.write(0x35);  // AX_L
+  if (_imuType == IMU_NONE) { ax = 0; ay = 0; az = -1.0f; return false; }
+  uint8_t reg; bool bigEndian; float s;
+  if (_imuType == IMU_QMI8658) { reg = 0x35; bigEndian = false; s = 16.0f / 32768.0f; }
+  else                         { reg = 0x3B; bigEndian = true;  s = 8.0f  / 32768.0f; }  // MPU6886 ±8g
+  Wire.beginTransmission(_imuAddr);
+  Wire.write(reg);
   if (Wire.endTransmission(false) != 0) { ax = 0; ay = 0; az = -1.0f; return false; }
-  Wire.requestFrom(_QMI_ADDR, 6);
+  Wire.requestFrom((int)_imuAddr, 6);
   if (Wire.available() < 6) { ax = 0; ay = 0; az = -1.0f; return false; }
-  int16_t rx = (int16_t)(Wire.read() | (Wire.read() << 8));
-  int16_t ry = (int16_t)(Wire.read() | (Wire.read() << 8));
-  int16_t rz = (int16_t)(Wire.read() | (Wire.read() << 8));
-  const float s = 16.0f / 32768.0f;
-  ax = rx * s; ay = ry * s; az = rz * s;
+  int16_t r[3];
+  for (int i = 0; i < 3; i++) {
+    uint8_t a = Wire.read(), b = Wire.read();
+    r[i] = bigEndian ? (int16_t)((a << 8) | b) : (int16_t)((b << 8) | a);
+  }
+  ax = r[0] * s; ay = r[1] * s; az = r[2] * s;
   return true;
 }
 static void _hwDisplayBright(uint8_t lev4) {
@@ -210,14 +241,19 @@ static void _hwLedSet(bool on) {
 static void _hwUpdate()     { _hwBtnA.update(); _hwBtnB.update(); }
 static void _hwBeepUpdate() {}
 static void _hwSetup() {
+  Serial.begin(115200);   // M5.begin() does this on the Plus; we must do it here
+  delay(50);
+
   _hwTft.init();
   _hwTft.setRotation(0);
   _hwTft.fillScreen(TFT_BLACK);
   pinMode(TFT_BL, OUTPUT);
   _hwDisplayOn(false);
 
-  _imuOk = _qmiInit();
-  if (!_imuOk) Serial.println("[hw] QMI8658 not found — IMU disabled");
+  _imuOk = _imuInit();
+  Serial.printf("[hw] IMU: %s\n",
+                _imuType == IMU_QMI8658 ? "QMI8658 @0x6B" :
+                _imuType == IMU_MPU6886 ? "MPU6886 @0x68" : "none found");
 
   _hwBtnA.begin();
   _hwBtnB.begin();
@@ -900,7 +936,8 @@ void drawInfo() {
 #ifdef BOARD_IDEASPARK
     ln("  imu      %s", _mpuOk ? "MPU6050 ok" : "not found");
 #else
-    ln("  imu      %s", _imuOk ? "QMI8658 ok" : "not found");
+    ln("  imu      %s", _imuType == IMU_QMI8658 ? "QMI8658" :
+                        _imuType == IMU_MPU6886 ? "MPU6886" : "not found");
 #endif
 #else
     int vBat_mV = (int)(M5.Axp.GetBatVoltage() * 1000);
@@ -1267,6 +1304,13 @@ void setup() {
   netBuddyBegin(btName);  // arm WiFi/MQTT bridge if /mqtt.json + wifi setting
 
   // BLE stays always-on; s.bt is stored as a preference only.
+  // The 135x240 sprite is ~64.8KB at 16bpp, which no longer fits in the heap
+  // left after the BLE stack (plus the linked-in WiFi stack) on the TFT_eSPI
+  // boards. Drop those to an 8bpp sprite (~32.4KB, colors via RGB332) so it
+  // always allocates. The M5StickC Plus keeps full 16bpp.
+#if defined(BOARD_IDEASPARK) || defined(BOARD_PLUS2)
+  spr.setColorDepth(8);
+#endif
   spr.createSprite(W, H);
   characterInit(nullptr);  // scan /characters/ for whatever is installed
   gifAvailable = characterLoaded();
