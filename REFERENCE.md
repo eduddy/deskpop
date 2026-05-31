@@ -136,6 +136,8 @@ generic counter (e.g. bytes written for chunk acks, otherwise 0).
 | `{"cmd":"name","name":"Clawd"}`  | sets device display name | `{"ack":"name","ok":true}`   |
 | `{"cmd":"owner","name":"Felix"}` | sets owner name          | `{"ack":"owner","ok":true}`  |
 | `{"cmd":"unpair"}`               | erase stored BLE bonds   | `{"ack":"unpair","ok":true}` |
+| `{"cmd":"ir",...}`               | fire an IR code (below)  | (fire-and-forget, no ack)    |
+| `{"cmd":"netcfg",...}`           | set WiFi/MQTT config     | (fire-and-forget, no ack)    |
 
 **Status response.** The desktop polls this every couple of seconds to
 populate the Hardware Buddy window's stats panel:
@@ -216,6 +218,69 @@ If you accept the folder-push protocol, validate `file.path` before
 writing — the desktop sends whatever filenames are in the dropped
 folder, so reject `..` and absolute paths unless your filesystem holds
 nothing you'd mind overwritten.
+
+## IR blaster (optional)
+
+Builds with `IR_TX_PIN` set drive an IR LED with a 38&nbsp;kHz NEC carrier. Fire
+a code from the desktop/webapp over BLE or USB serial — no ack, fire-and-forget:
+
+```json
+{"cmd":"ir","ir":{"proto":"nec","addr":4,"cmd":8}}
+{"cmd":"ir","ir":{"data":551489775,"bits":32}}
+{"cmd":"ir","ir":{"carrier":36000,"data":...}}
+```
+
+| Field     | Meaning                                                        |
+| --------- | -------------------------------------------------------------- |
+| `proto`   | `"nec"` (default). Other protocols send via `data`/`bits`.     |
+| `addr`    | NEC 8-bit address. Frame is `addr / ~addr / cmd / ~cmd`.       |
+| `cmd`     | NEC 8-bit command.                                             |
+| `data`    | Pre-framed value, shifted out LSB-first (`bits` long).         |
+| `bits`    | Bit count for `data` (default 32).                             |
+| `carrier` | Carrier frequency in Hz (default 38000); persists until reset. |
+
+On the M5StickC&nbsp;Plus2 the onboard IR emitter is on **GPIO&nbsp;19**
+(`-DIR_TX_PIN=19`); on the original M5StickC/Plus it's **GPIO&nbsp;9**. For
+other boards wire an IR LED (+~100Ω) to a free GPIO and set `-DIR_TX_PIN`.
+
+## MQTT bridge — IMU telemetry + remote control (optional)
+
+When the **wifi** setting is on and a `/mqtt.json` config is present on the
+device filesystem, the firmware also joins WiFi and an MQTT broker *alongside*
+the BLE link (BLE stays the primary Claude channel — this is purely additive).
+It streams the IMU so the **Claude Cowork Buddy webapp** (`webapp/`) can render
+an ASCII avatar that walks/emotes with the stick, and accepts remote commands.
+
+Provision either by dropping `/mqtt.json` on LittleFS (see
+`webapp/mqtt.example.json`) or at runtime over BLE/USB:
+
+```json
+{"cmd":"netcfg","ssid":"...","pass":"...","broker":"192.168.1.10",
+ "port":1883,"user":"","mqtt_pass":"","base":"claude/buddy"}
+```
+
+Topics (`<base>` defaults to `claude/buddy`, `<id>` is the BLE name e.g.
+`Claude-1A2B`):
+
+| Topic                  | Dir | Payload                                                        |
+| ---------------------- | --- | -------------------------------------------------------------- |
+| `<base>/<id>/imu`      | out | `{"id","ax","ay","az","tx","ty","shake","g","state","seq","up"}` @ ~10 Hz |
+| `<base>/<id>/state`    | out | persona word (`idle`/`busy`/…), retained, published on change  |
+| `<base>/<id>/online`   | out | retained `"1"` / LWT `"0"`                                     |
+| `<base>/<id>/cmd`      | in  | `{"ir":{…}}` (same shape as above) or `{"mood":"wave"}`        |
+
+IMU payload fields: `ax/ay/az` are g-units; `tx/ty` are clamped tilt (−1..1) for
+driving the avatar's position; `shake` is 0/1; `g` is a derived gesture
+(`idle`/`lean_l`/`lean_r`/`wave`/`facedown`/`dizzy`); `state` is the current
+persona; `seq` increments per sample; `up` is uptime seconds.
+
+A `{"mood":…}` command (`wave`, `watch`/`angry`/`impatient`, `busy`, `dizzy`/
+`confused`, `celebrate`/`happy`, `heart`, `sleep`, `idle`) briefly overrides the
+on-stick persona so device and webapp show the same pose.
+
+The broker needs a WebSocket listener for the browser (e.g. Mosquitto
+`listener 9001` / `protocol websockets`); the stick uses plain TCP. See
+[`webapp/README.md`](webapp/README.md).
 
 ## Availability
 

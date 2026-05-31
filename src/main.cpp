@@ -252,7 +252,23 @@ static void _hwSetup() {
 
 #endif  // ────────────────────────────────────────────────────────────────────
 
+// M5StickCPlus.h transitively pulls in bare color names and the esp_mac API.
+// The TFT_eSPI path (Ideaspark/Plus2) doesn't include it, so provide the few
+// symbols main.cpp references directly. Guarded so the M5 build is unaffected.
+#if defined(BOARD_IDEASPARK) || defined(BOARD_PLUS2)
+#include <esp_mac.h>
+#ifndef GREEN
+#define GREEN 0x07E0
+#endif
+#ifndef RED
+#define RED 0xF800
+#endif
+#endif
+
 #include <LittleFS.h>
+#if defined(BOARD_IDEASPARK) || defined(BOARD_PLUS2)
+using fs::File;   // M5StickCPlus.h brings this in transitively on the M5 build
+#endif
 #include <stdarg.h>
 #include "ble_bridge.h"
 #include "data.h"
@@ -277,6 +293,14 @@ static void startBt() {
 
 #include "character.h"
 #include "stats.h"
+#include "ir_blaster.h"
+#include "net_buddy.h"
+#include "stats_access.h"
+
+// net_buddy lives in its own TU and can't include the single-TU stats.h, so
+// it reads the one setting it needs (the wifi toggle) through this accessor.
+bool netSettingWifiOn() { return settings().wifi; }
+
 const int W = 135, H = 240;
 const int CX = W / 2;
 const int CY_BASE = 120;
@@ -824,7 +848,7 @@ void drawInfo() {
     ln("to approve from here.");
     y += 6;
     spr.setTextColor(p.textDim, p.bg);
-    ln("18 species. Settings");
+    ln("19 species. Settings");
     ln("> ascii pet to cycle.");
 
   } else if (infoPage == 1) {
@@ -1239,6 +1263,8 @@ void setup() {
   settingsLoad();
   petNameLoad();
   buddyInit();
+  irInit();               // IR blaster (no-op unless IR_TX_PIN is set)
+  netBuddyBegin(btName);  // arm WiFi/MQTT bridge if /mqtt.json + wifi setting
 
   // BLE stays always-on; s.bt is stored as a preference only.
   spr.createSprite(W, H);
@@ -1472,6 +1498,21 @@ void loop() {
   uint32_t pk = blePasskey();
   if (pk && !lastPasskey) { wake(); beep(1800, 60); }
   lastPasskey = pk;
+
+  // Webapp mood override: a remote {"mood":...} over MQTT briefly steers the
+  // on-stick persona so device and webapp show the same thing. Yields to
+  // one-shots, pending prompts, and the charging clock.
+  uint8_t netMood = netBuddyMoodOverride();
+  if (netMood != 0xFF && (int32_t)(now - oneShotUntil) >= 0 && !inPrompt && !clocking)
+    activeState = (PersonaState)netMood;
+
+  // Stream IMU + persona state to the Cowork Buddy webapp (opt-in: only does
+  // anything when the wifi setting is on and /mqtt.json is present).
+  {
+    float nx, ny, nz;
+    _hwGetAccel(nx, ny, nz);
+    netBuddyLoop(nx, ny, nz, (uint8_t)activeState, activeState == P_DIZZY);
+  }
 
   if (napping || screenOff || landscapeClock) {
     // skip sprite render — face-down, powered off, or landscape clock

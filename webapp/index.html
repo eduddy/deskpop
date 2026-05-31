@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Claude Cowork Buddy</title>
+<style>
+  :root {
+    --bg:#05070a; --strip:#0a0e14; --ink:#9bf0c8; --dim:#3d5a4e;
+    --accent:#07ffc8; --warn:#ffb020; --hot:#ff5252; --love:#ff5ea8;
+    --panel:#0d1219; --line:#16202b;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink);
+    font-family:"Cascadia Code","JetBrains Mono","Consolas",ui-monospace,monospace; }
+
+  /* ── the top-of-screen buddy strip ─────────────────────────────────────── */
+  #strip {
+    position:fixed; top:0; left:0; right:0; height:128px; z-index:50;
+    background:linear-gradient(180deg,#0c1119 0%, #070a0f 100%);
+    border-bottom:1px solid var(--line);
+    box-shadow:0 2px 18px rgba(0,0,0,.6);
+    overflow:hidden;
+  }
+  /* faint scanlines for the CRT-android vibe */
+  #strip::after {
+    content:""; position:absolute; inset:0; pointer-events:none;
+    background:repeating-linear-gradient(0deg,rgba(0,0,0,.0) 0 2px,rgba(0,0,0,.18) 2px 3px);
+    mix-blend-mode:multiply;
+  }
+  #floor { position:absolute; left:0; right:0; bottom:14px; height:1px;
+    background:linear-gradient(90deg,transparent,var(--line),transparent); }
+  #buddy {
+    position:absolute; bottom:8px; left:0;
+    transform:translateX(0);
+    transition:transform .12s linear;
+    white-space:pre; line-height:1.0; font-size:13px; letter-spacing:0;
+    text-shadow:0 0 6px rgba(7,255,200,.35);
+    will-change:transform;
+  }
+  #speech {
+    position:absolute; bottom:96px; padding:3px 8px; border:1px solid var(--line);
+    background:var(--panel); color:var(--ink); border-radius:6px; font-size:12px;
+    opacity:0; transform:translateY(4px); transition:opacity .2s, transform .2s;
+    white-space:nowrap; pointer-events:none;
+  }
+  #speech.show { opacity:1; transform:translateY(0); }
+  #moodtag {
+    position:absolute; right:10px; top:8px; font-size:11px; color:var(--dim);
+    text-transform:uppercase; letter-spacing:2px;
+  }
+  #linkdot { display:inline-block; width:8px; height:8px; border-radius:50%;
+    background:var(--hot); margin-left:6px; vertical-align:middle; }
+  #linkdot.on { background:var(--accent); box-shadow:0 0 8px var(--accent); }
+
+  /* ── content below the strip ───────────────────────────────────────────── */
+  main { max-width:880px; margin:148px auto 60px; padding:0 18px; }
+  h1 { font-size:20px; font-weight:600; letter-spacing:1px; margin:0 0 4px; }
+  h1 span { color:var(--accent); }
+  .sub { color:var(--dim); font-size:13px; margin:0 0 22px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    padding:16px 18px; margin:0 0 16px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:2px;
+    color:var(--dim); margin:0 0 12px; }
+  label { display:block; font-size:12px; color:var(--dim); margin:10px 0 4px; }
+  input[type=text], input[type=password] {
+    width:100%; background:#05080c; border:1px solid var(--line); color:var(--ink);
+    border-radius:7px; padding:8px 10px; font-family:inherit; font-size:13px; }
+  .row { display:flex; gap:12px; flex-wrap:wrap; }
+  .row > div { flex:1 1 160px; }
+  .btns { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+  button {
+    background:#0e1620; color:var(--ink); border:1px solid var(--line);
+    border-radius:8px; padding:8px 14px; font-family:inherit; font-size:13px;
+    cursor:pointer; transition:.12s; }
+  button:hover { border-color:var(--accent); color:#fff; }
+  button.primary { background:var(--accent); color:#04110c; border-color:var(--accent); font-weight:600; }
+  button.warn { border-color:var(--warn); color:var(--warn); }
+  .pill { display:inline-block; font-size:11px; padding:2px 9px; border-radius:999px;
+    border:1px solid var(--line); color:var(--dim); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(110px,1fr)); gap:8px; }
+  .telemetry { font-size:12px; color:var(--dim); line-height:1.7; }
+  .telemetry b { color:var(--ink); font-weight:500; }
+  .slider { width:100%; }
+  .muted { color:var(--dim); font-size:12px; }
+  code { color:var(--accent); background:#05080c; padding:1px 5px; border-radius:4px; }
+  .toggle { display:inline-flex; align-items:center; gap:8px; cursor:pointer; user-select:none; }
+  .toggle input { accent-color:var(--accent); }
+</style>
+</head>
+<body>
+
+<!-- The buddy lives pinned to the very top edge of the screen. -->
+<div id="strip">
+  <div id="moodtag">idle <span id="linkdot"></span></div>
+  <div id="floor"></div>
+  <div id="speech"></div>
+  <pre id="buddy"></pre>
+</div>
+
+<main>
+  <h1>Claude <span>Cowork</span> Buddy</h1>
+  <p class="sub">An ASCII android that paces the top of your screen and mirrors your
+     M5StickC&nbsp;Plus2 — tilt it to walk it, shake it to dizzy it, flick it to wave.
+     Drives over MQTT; works fully in <b>simulator</b> mode with no hardware.</p>
+
+  <div class="card">
+    <h2>Connection</h2>
+    <div class="row">
+      <div>
+        <label>MQTT broker (WebSocket URL)</label>
+        <input id="url" type="text" placeholder="ws://localhost:9001" />
+      </div>
+      <div>
+        <label>Base topic</label>
+        <input id="base" type="text" placeholder="claude/buddy" />
+      </div>
+      <div>
+        <label>Device id</label>
+        <input id="dev" type="text" placeholder="Claude-1A2B" />
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Username (optional)</label>
+        <input id="user" type="text" />
+      </div>
+      <div>
+        <label>Password (optional)</label>
+        <input id="pass" type="password" />
+      </div>
+    </div>
+    <div class="btns">
+      <button id="connectBtn" class="primary">Connect</button>
+      <button id="disconnectBtn">Disconnect</button>
+      <label class="toggle"><input type="checkbox" id="simToggle" /> Simulator mode</label>
+    </div>
+    <p class="muted" id="status" style="margin-top:10px">Idle. Enter a broker or flip on simulator mode.</p>
+  </div>
+
+  <div class="card">
+    <h2>Make it emote</h2>
+    <p class="muted">In simulator mode these animate locally. When connected, they also
+       publish <code>{"mood":…}</code> to <code>&lt;base&gt;/&lt;dev&gt;/cmd</code> so the
+       physical stick mirrors the pose.</p>
+    <div class="grid" id="moodGrid"></div>
+  </div>
+
+  <div class="card">
+    <h2>Drive the IMU (simulator)</h2>
+    <label>Tilt — walk left / right <span class="muted" id="tiltVal">0.00</span></label>
+    <input class="slider" id="tilt" type="range" min="-1" max="1" step="0.01" value="0" />
+    <div class="btns">
+      <button data-g="wave">Flick&nbsp;↑ (wave)</button>
+      <button data-g="shake">Shake (dizzy)</button>
+      <button data-g="facedown">Face-down (sleep)</button>
+      <button data-g="center">Recenter</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>IR blaster relay</h2>
+    <p class="muted">Publishes <code>{"ir":{"proto":"nec","addr":N,"cmd":N}}</code> to the
+       command topic. The stick fires it from its IR LED — point the android at the TV.</p>
+    <div class="row">
+      <div><label>NEC address</label><input id="irAddr" type="text" placeholder="0" /></div>
+      <div><label>NEC command</label><input id="irCmd" type="text" placeholder="0" /></div>
+      <div style="display:flex;align-items:flex-end"><button id="irSend">Blast IR</button></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Telemetry</h2>
+    <div class="telemetry" id="telemetry">no data yet</div>
+  </div>
+</main>
+
+<!-- MQTT over WebSockets. Falls back gracefully to simulator if the CDN/broker is unreachable. -->
+<script src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
+<script src="buddy.js"></script>
+</body>
+</html>

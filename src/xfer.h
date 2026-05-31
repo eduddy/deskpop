@@ -72,7 +72,7 @@ const char* petName();
 void ownerSet(const char* name);
 const char* ownerName();
 #include "stats.h"
-#include <M5StickCPlus.h>
+#include "hw_platform.h"
 
 inline bool xferCommand(JsonDocument& doc) {
   const char* cmd = doc["cmd"];
@@ -112,9 +112,14 @@ inline bool xferCommand(JsonDocument& doc) {
   if (strcmp(cmd, "status") == 0) {
     // Dump everything the info screens show. Manual printf rather than
     // ArduinoJson serialize — less heap churn, and the shape is fixed.
+#if defined(BOARD_IDEASPARK) || defined(BOARD_PLUS2)
+    // No AXP192 fuel gauge on these boards; treat as USB-powered, report 0V.
+    int vBat = 0, iBat = 0, vBus = 5000;
+#else
     int vBat = (int)(M5.Axp.GetBatVoltage() * 1000);
     int iBat = (int)M5.Axp.GetBatCurrent();
     int vBus = (int)(M5.Axp.GetVBusVoltage() * 1000);
+#endif
     int pct = (vBat - 3200) / 10;
     if (pct < 0) pct = 0; if (pct > 100) pct = 100;
     char b[320];
