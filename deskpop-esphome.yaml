@@ -1,0 +1,359 @@
+# deskpop-esphome.yaml
+# Desktop Buddy — ESPHome firmware (Ideaspark 1.14" ESP32)
+#
+# Implements the Claude Hardware Buddy BLE protocol (Nordic UART Service).
+# Pin assignments match the Ideaspark board verified in platformio.ini.
+#
+# Flash to COM5:
+#   esphome run deskpop-esphome.yaml --device COM5
+#
+# Install ESPHome first:
+#   pip install esphome
+#
+# Adjust pin substitutions below if your board layout differs.
+
+# ── Board: Ideaspark 1.14" ESP32 (135×240 ST7789 + GPIO buttons) ──────────────
+substitutions:
+  tft_mosi: "23"
+  tft_sclk: "18"
+  tft_cs:   "15"
+  tft_dc:   "2"
+  tft_rst:  "4"
+  tft_bl:   "32"
+  btn_a:    "0"   # BOOT button — active LOW, internal pull-up
+  btn_b:    "35"  # Side button — add 10kΩ to 3V3 if floating
+
+esphome:
+  name: claude-buddy
+  friendly_name: Claude Buddy
+  on_boot:
+    priority: 600        # Before BLE stack starts advertising
+    then:
+      - lambda: |-
+          // BLE name must start with "Claude" for the desktop app to find it
+          esp_ble_gap_set_device_name("Claude Buddy");
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: INFO
+  baud_rate: 115200
+
+# ── BLE pairing (Just Works — no PIN required) ─────────────────────────────────
+esp32_ble:
+  io_capability: none
+
+# ── State (0 sleep · 1 idle · 2 busy · 3 attention) ───────────────────────────
+globals:
+  - id: g_state
+    type: int
+    restore_value: false
+    initial_value: "0"
+
+  - id: g_running
+    type: int
+    restore_value: false
+    initial_value: "0"
+
+  - id: g_waiting
+    type: int
+    restore_value: false
+    initial_value: "0"
+
+  - id: g_prompt_id
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+
+  - id: g_prompt_tool
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+
+  - id: g_prompt_hint
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+
+  - id: g_owner
+    type: std::string
+    restore_value: false
+    initial_value: '"Claude"'
+
+  - id: g_device_name
+    type: std::string
+    restore_value: true
+    initial_value: '"Claude Buddy"'
+
+  - id: g_rx_buf
+    type: std::string
+    restore_value: false
+    initial_value: '""'
+
+  - id: g_connected
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+  - id: g_blink
+    type: bool
+    restore_value: false
+    initial_value: "false"
+
+# ── BLE — Nordic UART Service ──────────────────────────────────────────────────
+# Service:  6e400001-b5a3-f393-e0a9-e50e24dcca9e
+# RX write: 6e400002-b5a3-f393-e0a9-e50e24dcca9e  (desktop → device)
+# TX notify:6e400003-b5a3-f393-e0a9-e50e24dcca9e  (device → desktop)
+esp32_ble_server:
+  manufacturer: Anthropic
+  model: Desktop Buddy
+  services:
+    - uuid: "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+      characteristics:
+        - uuid: "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+          id: ble_tx
+          notify: true
+          read: true
+        - uuid: "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
+          id: ble_rx
+          write: true
+          write_no_response: true
+          on_write:
+            - lambda: |-
+                // Accumulate bytes; process each newline-terminated JSON line.
+                for (uint8_t b : x) {
+                  if (b == '\n') {
+                    const std::string &j = id(g_rx_buf);
+                    if (j.empty()) continue;
+
+                    // ── Minimal JSON helpers ─────────────────────────────────
+                    auto get_int = [&](const char *key, int def) -> int {
+                      std::string k = std::string("\"") + key + "\":";
+                      auto p = j.find(k);
+                      if (p == std::string::npos) return def;
+                      p += k.size();
+                      while (p < j.size() && j[p] == ' ') p++;
+                      bool neg = p < j.size() && j[p] == '-';
+                      if (neg) p++;
+                      int v = 0;
+                      while (p < j.size() && isdigit((uint8_t)j[p]))
+                        v = v * 10 + (j[p++] - '0');
+                      return neg ? -v : v;
+                    };
+
+                    auto get_str = [&](const char *key) -> std::string {
+                      std::string k = std::string("\"") + key + "\":\"";
+                      auto p = j.find(k);
+                      if (p == std::string::npos) return "";
+                      p += k.size();
+                      std::string out;
+                      while (p < j.size() && j[p] != '"') {
+                        if (j[p] == '\\' && p + 1 < j.size()) { p++; }
+                        out += j[p++];
+                      }
+                      return out;
+                    };
+
+                    auto has_key = [&](const char *key) -> bool {
+                      return j.find(std::string("\"") + key + "\"") != std::string::npos;
+                    };
+
+                    // ── Send BLE notification helper ─────────────────────────
+                    auto send_ble = [&](const std::string &msg) {
+                      id(ble_tx)->set_value(msg);
+                      id(ble_tx)->notify();
+                    };
+
+                    // ── Dispatch on cmd / payload type ───────────────────────
+                    std::string cmd = get_str("cmd");
+
+                    if (cmd == "status") {
+                      send_ble("{\"ack\":\"status\",\"ok\":true,\"name\":\""
+                               + id(g_device_name) + "\"}\n");
+
+                    } else if (cmd == "name") {
+                      id(g_device_name) = get_str("name");
+                      send_ble("{\"ack\":\"name\",\"ok\":true,\"n\":0}\n");
+
+                    } else if (cmd == "owner") {
+                      id(g_owner) = get_str("name");
+                      send_ble("{\"ack\":\"owner\",\"ok\":true,\"n\":0}\n");
+
+                    } else if (cmd == "unpair") {
+                      send_ble("{\"ack\":\"unpair\",\"ok\":true,\"n\":0}\n");
+
+                    } else if (has_key("evt")) {
+                      // Turn events — ignore for now
+
+                    } else if (has_key("time")) {
+                      // Time sync — no action needed
+
+                    } else if (has_key("running") || has_key("total")) {
+                      // Heartbeat snapshot
+                      id(g_connected) = true;
+                      id(g_running) = get_int("running", 0);
+                      id(g_waiting) = get_int("waiting", 0);
+
+                      if (has_key("prompt")) {
+                        id(g_prompt_id)   = get_str("id");
+                        id(g_prompt_tool) = get_str("tool");
+                        id(g_prompt_hint) = get_str("hint");
+                        id(g_state) = 3;  // attention
+                      } else {
+                        id(g_prompt_id) = id(g_prompt_tool) = id(g_prompt_hint) = "";
+                        id(g_state) = (id(g_running) > 0) ? 2 : 1;
+                      }
+                    }
+
+                    id(g_rx_buf) = "";
+                  } else if (b >= 0x20) {  // skip control chars
+                    id(g_rx_buf) += (char)b;
+                    if (id(g_rx_buf).size() > 4096)
+                      id(g_rx_buf) = "";  // overflow guard
+                  }
+                }
+
+# ── SPI (display) ──────────────────────────────────────────────────────────────
+spi:
+  clk_pin:  GPIO${tft_sclk}
+  mosi_pin: GPIO${tft_mosi}
+
+# ── Fonts ──────────────────────────────────────────────────────────────────────
+font:
+  - file: "gfonts://Roboto"
+    id: f_lg
+    size: 22
+    glyphs: " !\"#%'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+  - file: "gfonts://Roboto"
+    id: f_sm
+    size: 14
+    glyphs: " !\"#%'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+
+# ── Colors ─────────────────────────────────────────────────────────────────────
+color:
+  - { id: c_white,      hex: "FFFFFF" }
+  - { id: c_black,      hex: "000000" }
+  - { id: c_yellow,     hex: "FFCC00" }
+  - { id: c_green,      hex: "44DD66" }
+  - { id: c_blue,       hex: "4499FF" }
+  - { id: c_red,        hex: "FF4444" }
+  - { id: c_gray,       hex: "888888" }
+  - { id: c_dim,        hex: "444444" }
+  - { id: c_dark_green, hex: "003300" }
+  - { id: c_dark_red,   hex: "330000" }
+
+# ── Display (ST7789 135×240 — same panel as M5StickC Plus / Ideaspark) ─────────
+display:
+  - platform: st7789v
+    model: TTGO TDisplay 135x240
+    cs_pin:         GPIO${tft_cs}
+    dc_pin:         GPIO${tft_dc}
+    reset_pin:      GPIO${tft_rst}
+    backlight_pin:  GPIO${tft_bl}
+    rotation: 0°
+    update_interval: 250ms
+    lambda: |-
+      it.fill(id(c_black));
+      int cx = it.get_width() / 2;  // 67 — horizontal center
+
+      if (!id(g_connected) || id(g_state) == 0) {
+        // ── Sleep ─────────────────────────────────────────────────────────────
+        it.printf(cx, 85,  id(f_lg), id(c_dim), TextAlign::TOP_CENTER, "( _ _ )");
+        it.printf(cx, 115, id(f_sm), id(c_dim), TextAlign::TOP_CENTER, "sleeping...");
+        return;
+      }
+
+      if (id(g_state) == 3) {
+        // ── Attention (approval pending) ──────────────────────────────────────
+        auto title_col = id(g_blink) ? id(c_yellow) : id(c_white);
+        it.printf(cx, 6, id(f_lg), title_col, TextAlign::TOP_CENTER, "APPROVAL");
+        it.filled_rectangle(0, 31, it.get_width(), 2, id(c_yellow));
+
+        // Tool name (truncate if needed)
+        std::string tool = id(g_prompt_tool);
+        if (tool.size() > 12) tool = tool.substr(0, 12);
+        it.printf(cx, 40, id(f_lg), id(c_white), TextAlign::TOP_CENTER, tool.c_str());
+
+        // Hint
+        std::string hint = id(g_prompt_hint);
+        if (hint.size() > 16) hint = hint.substr(0, 13) + "...";
+        it.printf(cx, 70, id(f_sm), id(c_gray), TextAlign::TOP_CENTER, hint.c_str());
+
+        // Allow button zone
+        it.filled_rectangle(4,  96, it.get_width() - 8, 36, id(c_dark_green));
+        it.printf(cx, 103, id(f_lg), id(c_green), TextAlign::TOP_CENTER, "[A] Allow");
+
+        // Deny button zone
+        it.filled_rectangle(4, 138, it.get_width() - 8, 36, id(c_dark_red));
+        it.printf(cx, 145, id(f_lg), id(c_red), TextAlign::TOP_CENTER, "[B] Deny");
+
+      } else if (id(g_state) == 2) {
+        // ── Busy ──────────────────────────────────────────────────────────────
+        it.printf(cx, 20,  id(f_lg), id(c_blue), TextAlign::TOP_CENTER, "( ^_^ )");
+        it.printf(cx, 60,  id(f_lg), id(c_white), TextAlign::TOP_CENTER, "Working...");
+        it.printf(cx, 90,  id(f_sm), id(c_gray), TextAlign::TOP_CENTER,
+                  "%d session%s", id(g_running), id(g_running) == 1 ? "" : "s");
+
+      } else {
+        // ── Idle ──────────────────────────────────────────────────────────────
+        it.printf(cx, 20, id(f_lg), id(c_green), TextAlign::TOP_CENTER, "( *_* )");
+        it.printf(cx, 60, id(f_lg), id(c_white), TextAlign::TOP_CENTER,
+                  id(g_owner).c_str());
+        it.printf(cx, 90, id(f_sm), id(c_gray), TextAlign::TOP_CENTER, "Connected");
+      }
+
+      // Footer — always visible
+      it.printf(cx, 220, id(f_sm), id(c_dim), TextAlign::TOP_CENTER,
+                "run:%d  wait:%d", id(g_running), id(g_waiting));
+
+# ── Blink ticker (500 ms) ──────────────────────────────────────────────────────
+interval:
+  - interval: 500ms
+    then:
+      - lambda: id(g_blink) = !id(g_blink);
+
+# ── Buttons ────────────────────────────────────────────────────────────────────
+binary_sensor:
+  # Button A (BOOT / front) — Approve
+  - platform: gpio
+    pin:
+      number: ${btn_a}
+      mode: { input: true, pullup: true }
+      inverted: true
+    id: btn_a
+    name: Button A
+    on_press:
+      - lambda: |-
+          if (id(g_state) == 3 && !id(g_prompt_id).empty()) {
+            std::string resp =
+              "{\"cmd\":\"permission\",\"id\":\"" + id(g_prompt_id) +
+              "\",\"decision\":\"once\"}\n";
+            id(ble_tx)->set_value(resp);
+            id(ble_tx)->notify();
+            id(g_prompt_id) = id(g_prompt_tool) = id(g_prompt_hint) = "";
+            id(g_state) = (id(g_running) > 0) ? 2 : 1;
+          }
+
+  # Button B (side, GPIO35) — Deny
+  # GPIO35 is input-only: no internal pullup. Add 10kΩ to 3V3 on the board.
+  - platform: gpio
+    pin:
+      number: ${btn_b}
+      mode: { input: true }
+      inverted: true
+    id: btn_b
+    name: Button B
+    on_press:
+      - lambda: |-
+          if (id(g_state) == 3 && !id(g_prompt_id).empty()) {
+            std::string resp =
+              "{\"cmd\":\"permission\",\"id\":\"" + id(g_prompt_id) +
+              "\",\"decision\":\"deny\"}\n";
+            id(ble_tx)->set_value(resp);
+            id(ble_tx)->notify();
+            id(g_prompt_id) = id(g_prompt_tool) = id(g_prompt_hint) = "";
+            id(g_state) = 1;  // idle
+          }
