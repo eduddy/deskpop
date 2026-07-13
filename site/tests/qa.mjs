@@ -40,7 +40,7 @@ const hero = page.locator('img[src*="hero"]');
 check("hero image rendered", (await hero.count()) === 1 && (await hero.evaluate((el) => el.naturalWidth > 0)));
 check("primary CTA visible", await page.locator('a.btn-primary:has-text("Browse the catalog")').isVisible());
 check("3 project cards on landing", (await page.locator('a.card:has(.chip:has-text("Agentic project"))').count()) === 3);
-check("3 featured products on landing", (await page.locator('a.card[href^="/catalog/"]').count()) === 3);
+check("3 featured products on landing", (await page.locator('a.card:has(.price)').count()) === 3);
 
 // ---- Nav links all lead to real pages ----
 console.log("Navigation");
@@ -53,8 +53,16 @@ for (const [label, path, h1] of [
 ]) {
   await page.goto(BASE, { waitUntil: "domcontentloaded" });
   await page.click(`.nav-links a:has-text("${label}")`);
-  await page.waitForURL(`**${path}`, { timeout: 10000 });
-  await page.waitForSelector("h1");
+  await page.waitForURL((u) => u.pathname.replace(/\/$/, "").endsWith(path), { timeout: 10000 });
+  // Wait for the hydrated heading (client-filtered pages first render a
+  // Suspense fallback heading, then swap in the real one).
+  await page
+    .waitForFunction(
+      (want) => document.querySelector("h1")?.textContent?.toLowerCase().includes(want),
+      h1.toLowerCase(),
+      { timeout: 10000 }
+    )
+    .catch(() => {});
   const heading = await page.locator("h1").first().textContent();
   check(`nav "${label}" → ${path}`, page.url().includes(path) && (heading ?? "").toLowerCase().includes(h1.toLowerCase()), `url=${page.url()} h1=${heading}`);
 }
@@ -73,9 +81,21 @@ for (const slug of ["cindertrace", "night-market-ledger"]) {
 }
 
 // ---- Catalog + filtering ----
+// Filtering runs client-side, so wait until the card count settles to the
+// expected value (up to 5s) rather than reading immediately after load.
+async function settledCount(selector, expected) {
+  await page
+    .waitForFunction(
+      ([sel, exp]) => document.querySelectorAll(sel).length === exp,
+      [selector, expected],
+      { timeout: 5000 }
+    )
+    .catch(() => {});
+  return page.locator(selector).count();
+}
 console.log("Catalog");
 await page.goto(`${BASE}/catalog`, { waitUntil: "domcontentloaded" });
-check("10 products in full catalog", (await page.locator('[data-testid="product-card"]').count()) === 10);
+check("10 products in full catalog", (await settledCount('[data-testid="product-card"]', 10)) === 10);
 const filters = [
   ["edge-audits", 3],
   ["agent-deployments", 3],
@@ -84,7 +104,7 @@ const filters = [
 ];
 for (const [cat, expected] of filters) {
   await page.goto(`${BASE}/catalog?category=${cat}`, { waitUntil: "domcontentloaded" });
-  const n = await page.locator('[data-testid="product-card"]').count();
+  const n = await settledCount('[data-testid="product-card"]', expected);
   check(`filter ${cat} → ${expected} products`, n === expected, `got ${n}`);
   check(`filter ${cat} active state`, (await page.locator(`.filter-row a.active[href*="${cat}"]`).count()) === 1);
 }
@@ -138,10 +158,10 @@ check("cart cleared after order", (await page.locator('[data-testid="cart-count"
 // ---- Blog ----
 console.log("Blog");
 await page.goto(`${BASE}/blog`, { waitUntil: "domcontentloaded" });
-check("7 posts listed", (await page.locator('[data-testid="post-list"] .post-row').count()) === 7);
+check("7 posts listed", (await settledCount('[data-testid="post-list"] .post-row', 7)) === 7);
 for (const [kind, expected] of [["news", 2], ["article", 2], ["guide", 3]]) {
   await page.goto(`${BASE}/blog?kind=${kind}`, { waitUntil: "domcontentloaded" });
-  const n = await page.locator('[data-testid="post-list"] .post-row').count();
+  const n = await settledCount('[data-testid="post-list"] .post-row', expected);
   check(`blog filter ${kind} → ${expected}`, n === expected, `got ${n}`);
 }
 await page.goto(`${BASE}/blog/hardening-agents-for-vacuum-grade-ops`, { waitUntil: "domcontentloaded" });

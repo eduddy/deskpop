@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getProjects, getProducts, getPosts, formatPrice, getCategories } from "@/lib/db";
+import { asset } from "@/lib/asset";
 
 export default async function Home() {
   const [projects, products, posts, categories] = await Promise.all([
@@ -43,7 +44,7 @@ export default async function Home() {
           <div className="hero-img-frame">
             <span className="frame-tag">FIG. 01 — INTEGRATION BAY 4</span>
             <img
-              src="/images/hero.png"
+              src={asset("/images/hero.png")}
               alt="OpenTalon consultant working at an aerospace integration bay, blueprint schematics and orange flight-suit accents"
               width={1536}
               height={1024}
@@ -73,7 +74,7 @@ export default async function Home() {
             {projects.map((p) => (
               <Link key={p.slug} href={`/projects/${p.slug}`} className="card">
                 <span className="accent-bar" style={{ background: p.accent }} />
-                <img className="card-img card-img-wide" src={p.image} alt={`${p.name} project artwork`} />
+                <img className="card-img card-img-wide" src={asset(p.image)} alt={`${p.name} project artwork`} />
                 <div className="card-body">
                   <span className="chip chip-fill">Agentic project</span>
                   <h3>{p.name}</h3>
@@ -106,7 +107,7 @@ export default async function Home() {
             {featured.map((p) => (
               <Link key={p.slug} href={`/catalog/${p.slug}`} className="card">
                 <span className="accent-bar" style={{ background: p.accent }} />
-                <img className="card-img" src={p.image} alt={`${p.name} product image`} />
+                <img className="card-img" src={asset(p.image)} alt={`${p.name} product image`} />
                 <div className="card-body">
                   <span className="chip">
                     {categories.find((c) => c.slug === p.category)?.name ?? p.category}

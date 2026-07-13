@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getProject, getProjects } from "@/lib/db";
+import { asset } from "@/lib/asset";
 
 export async function generateStaticParams() {
   const projects = await getProjects();
@@ -25,7 +26,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
           <span className="frame-tag" style={{ background: project.accent }}>
             MISSION LOG — {project.name}
           </span>
-          <img src={project.image} alt={`${project.name} project artwork`} />
+          <img src={asset(project.image)} alt={`${project.name} project artwork`} />
         </div>
         <div className="detail-copy">
           <span className="kicker">Agentic project</span>

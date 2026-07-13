@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { readCart, setQty, CART_EVENT, type CartLine } from "@/lib/cart";
 import { formatPrice } from "@/lib/format";
+import { asset } from "@/lib/asset";
 
 type CatalogEntry = { slug: string; name: string; priceCents: number; image: string };
 
@@ -58,7 +59,7 @@ export default function CartView({ catalog }: { catalog: CatalogEntry[] }) {
             <tr key={r.slug} data-testid="cart-row">
               <td>
                 <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                  <img src={r.image} alt="" width={52} height={52} style={{ border: "1.5px solid var(--ink)" }} />
+                  <img src={asset(r.image)} alt="" width={52} height={52} style={{ border: "1.5px solid var(--ink)" }} />
                   <Link href={`/catalog/${r.slug}`} style={{ fontWeight: 600 }}>
                     {r.name}
                   </Link>

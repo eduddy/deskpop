@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { getProjects } from "@/lib/db";
+import { asset } from "@/lib/asset";
 
 export const metadata: Metadata = {
   title: "Projects",
@@ -26,7 +27,7 @@ export default async function ProjectsPage() {
         <div className="post-list">
           {projects.map((p) => (
             <Link key={p.slug} href={`/projects/${p.slug}`} className="post-row" style={{ gridTemplateColumns: "150px 1fr auto", borderLeft: `6px solid ${p.accent}` }}>
-              <img src={p.image} alt={`${p.name} artwork`} style={{ width: 150, border: "1.5px solid var(--ink)" }} />
+              <img src={asset(p.image)} alt={`${p.name} artwork`} style={{ width: 150, border: "1.5px solid var(--ink)" }} />
               <div>
                 <span className="chip chip-fill">Agentic project</span>
                 <h3 style={{ marginTop: 8 }}>{p.name}</h3>

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getProduct, getProducts, getCategories, formatPrice } from "@/lib/db";
 import AddToCartButton from "@/components/AddToCartButton";
+import { asset } from "@/lib/asset";
 
 export async function generateStaticParams() {
   const products = await getProducts();
@@ -30,7 +31,7 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
           <span className="frame-tag" style={{ background: product.accent }}>
             {product.specs.find((s) => s.label === "SKU")?.value ?? "OT-UNIT"}
           </span>
-          <img src={product.image} alt={`${product.name} product image`} />
+          <img src={asset(product.image)} alt={`${product.name} product image`} />
         </div>
         <div className="detail-copy">
           {category && (
@@ -77,7 +78,7 @@ export default async function ProductPage({ params }: { params: Promise<{ slug: 
             {related.map((p) => (
               <Link key={p.slug} href={`/catalog/${p.slug}`} className="card">
                 <span className="accent-bar" style={{ background: p.accent }} />
-                <img className="card-img" src={p.image} alt={`${p.name} product image`} />
+                <img className="card-img" src={asset(p.image)} alt={`${p.name} product image`} />
                 <div className="card-body">
                   <h3>{p.name}</h3>
                   <p>{p.tagline}</p>

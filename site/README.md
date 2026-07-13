@@ -43,3 +43,34 @@ placeholders in place.
 npm install
 npm run dev
 ```
+
+## Deploy
+
+Two supported modes:
+
+**Static (GitHub Pages)** — the default live deployment. The workflow
+`.github/workflows/deploy-opentalon-pages.yml` builds a static export and
+publishes it to the `gh-pages` branch on every push to the site branch. It
+runs:
+
+```sh
+NEXT_EXPORT=1 NEXT_BASE_PATH=/deskpop npm run build   # after removing app/api
+```
+
+`NEXT_EXPORT=1` turns on `output: export`; `NEXT_BASE_PATH` sets the project
+subpath (`https://<owner>.github.io/deskpop/`). In static mode there is no
+server, so category/blog filtering runs client-side and checkout completes as
+a client-side demo (`lib/asset.ts` exposes `IS_STATIC`). The live URL is
+`https://eduddy.github.io/deskpop/`.
+
+**Server (Node host)** — a normal `npm run build` / `npm start` keeps the API
+routes (`/api/checkout`, `/api/setup`), the Neon integration, and server-side
+checkout re-pricing. Set `DATABASE_URL` (and optionally `STRIPE_SECRET_KEY`)
+and hit `/api/setup` once to initialize Neon.
+
+## QA
+
+`node tests/qa.mjs <base-url>` runs a 50-check Playwright sweep (nav, filtering,
+cart math, checkout, images, 404, responsive). It works against both a local
+server (`http://localhost:3000`) and the deployed Pages URL
+(`https://eduddy.github.io/deskpop`).

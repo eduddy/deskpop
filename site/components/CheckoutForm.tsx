@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { readCart, clearCart, type CartLine } from "@/lib/cart";
 import { formatPrice } from "@/lib/format";
+import { IS_STATIC } from "@/lib/asset";
 
 type CatalogEntry = { slug: string; name: string; priceCents: number };
 
@@ -46,6 +47,20 @@ export default function CheckoutForm({ catalog }: { catalog: CatalogEntry[] }) {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
+
+    // Static hosting (e.g. GitHub Pages) has no API route. Re-price from the
+    // catalog client-side and confirm the demo order without a server.
+    if (IS_STATIC) {
+      const totalNow = rows.reduce((sum, r) => sum + r.priceCents * r.qty, 0);
+      const rand = Array.from({ length: 4 }, () =>
+        "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Math.floor(Math.random() * 32)]
+      ).join("");
+      const orderId = `OT-${Date.now().toString(36).toUpperCase()}-${rand}`;
+      clearCart();
+      router.push(`/checkout/success?order=${encodeURIComponent(orderId)}&total=${totalNow}`);
+      return;
+    }
+
     try {
       const res = await fetch("/api/checkout", {
         method: "POST",
