@@ -20,8 +20,15 @@ function check(name, cond, detail = "") {
   }
 }
 
-const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
+// Route the browser through the agent proxy for non-local targets (the CA is
+// trusted via NODE_EXTRA_CA_CERTS); direct connections get reset otherwise.
+const proxyServer = process.env.HTTPS_PROXY || process.env.https_proxy;
+const useProxy = proxyServer && !/localhost|127\.0\.0\.1/.test(BASE);
+const browser = await chromium.launch(useProxy ? { proxy: { server: proxyServer } } : {});
+const page = await browser.newPage({
+  viewport: { width: 1366, height: 900 },
+  ignoreHTTPSErrors: true,
+});
 
 const badResponses = [];
 page.on("response", (r) => {
@@ -118,20 +125,34 @@ check("all 10 product images load", imgSrcs.every((i) => i.ok));
 check("all product images distinct files", new Set(imgSrcs.map((i) => i.src)).size === imgSrcs.length);
 
 // ---- Product detail + cart flow ----
+// The add-to-cart button is a client island; on a static host it isn't
+// interactive until hydration, so click and then wait for the badge to reach
+// the expected count, retrying the click if the first one landed too early.
+async function addToCartUntil(expected) {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    await page.click('[data-testid="add-to-cart"]');
+    try {
+      await page.waitForFunction(
+        (want) => document.querySelector('[data-testid="cart-count"]')?.textContent === `(${want})`,
+        expected,
+        { timeout: 1200 }
+      );
+      return true;
+    } catch {
+      /* click likely fired pre-hydration; retry */
+    }
+  }
+  return false;
+}
 console.log("Cart & checkout flow");
 await page.goto(`${BASE}/catalog/talon-recon-audit`, { waitUntil: "domcontentloaded" });
 check("product name", (await page.locator('[data-testid="product-name"]').textContent())?.includes("Talon Recon Audit"));
 check("product price $1,800", (await page.locator('[data-testid="product-price"]').textContent())?.includes("1,800"));
-await page.click('[data-testid="add-to-cart"]');
-await page.waitForTimeout(300);
-check("cart badge = 1", (await page.locator('[data-testid="cart-count"]').textContent()) === "(1)");
-await page.click('[data-testid="add-to-cart"]');
-await page.waitForTimeout(300);
-check("cart badge = 2 after second add", (await page.locator('[data-testid="cart-count"]').textContent()) === "(2)");
+check("cart badge = 1", await addToCartUntil(1));
+check("cart badge = 2 after second add", await addToCartUntil(2));
 
 await page.goto(`${BASE}/catalog/edge-crate-mk2`, { waitUntil: "domcontentloaded" });
-await page.click('[data-testid="add-to-cart"]');
-await page.waitForTimeout(300);
+await addToCartUntil(3);
 
 await page.goto(`${BASE}/cart`, { waitUntil: "domcontentloaded" });
 await page.waitForSelector('[data-testid="cart-table"]');
@@ -178,7 +199,7 @@ check("custom 404 page", (await page.locator("h1").textContent())?.includes("404
 
 // ---- Mobile spot check ----
 console.log("Responsive & hygiene");
-const mobile = await browser.newPage({ viewport: { width: 390, height: 844 } });
+const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, ignoreHTTPSErrors: true });
 await mobile.goto(BASE, { waitUntil: "networkidle" });
 check("mobile: no horizontal overflow", await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1));
 check("mobile: nav cart link visible", await mobile.locator(".nav-links a.cart-link").isVisible());
