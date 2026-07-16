@@ -1,0 +1,76 @@
+# Builds the OpenTalon site (site/) as a static export and publishes it to
+# GitHub Pages from the gh-pages branch. Serving Pages from a branch avoids the
+# github-pages environment's default branch restriction, so this deploys
+# straight from the feature branch without touching main.
+name: Deploy OpenTalon site to Pages
+
+on:
+  push:
+    branches: [claude/small-task-edge-blog-fvhxe5]
+    paths: ["site/**", ".github/workflows/deploy-opentalon-pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # push to gh-pages
+  pages: write # configure the Pages site
+
+concurrency:
+  group: opentalon-pages
+  cancel-in-progress: true
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install dependencies
+        working-directory: site
+        run: npm ci
+
+      - name: Build static export
+        working-directory: site
+        env:
+          NEXT_EXPORT: "1"
+          NEXT_BASE_PATH: "/deskpop"
+        run: |
+          # Static hosting has no server, so drop the API routes before export.
+          rm -rf app/api
+          npm run build
+          touch out/.nojekyll
+
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: site/out
+          publish_branch: gh-pages
+          force_orphan: true
+
+      - name: Point Pages at gh-pages branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Create the Pages site (first run) or update its source (later runs).
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/pages" \
+            -d '{"source":{"branch":"gh-pages","path":"/"}}' || true)
+          echo "POST /pages -> $code"
+          if [ "$code" != "201" ]; then
+            up=$(curl -sS -o /dev/null -w '%{http_code}' -X PUT \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$REPO/pages" \
+              -d '{"source":{"branch":"gh-pages","path":"/"}}' || true)
+            echo "PUT /pages -> $up"
+          fi
+          echo "Pages URL: https://$(echo $REPO | cut -d/ -f1).github.io/$(echo $REPO | cut -d/ -f2)/"
